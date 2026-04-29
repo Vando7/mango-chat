@@ -1,41 +1,54 @@
-import { forwardRef, useEffect } from 'react'
+import { forwardRef, useEffect, useRef } from 'react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 
-const MessageBubble = ({ role, content, reasoning, image, streaming }) => (
-  <div className="flex gap-3">
-    {role === 'assistant' && (
-      <div className="mt-1 h-7 w-7 flex-shrink-0 rounded-full bg-gradient-to-br from-purple-500 to-cyan-400 flex items-center justify-center text-xs font-bold text-white">
-        AI
-      </div>
-    )}
-    <div className={`max-w-[80%] rounded-2xl px-4 py-2.5 ${role === 'user' ? 'bg-purple-600/80 text-white' : 'bg-gray-800 text-gray-200'}`}>
-      {image && <img src={image} alt="uploaded" className="mb-2 max-h-48 rounded-lg" />}
-      {reasoning && (
-        <div className="mb-2">
-          <div className="text-xs text-gray-400 mb-1">💭 Reasoning</div>
-          <div className="markdown-body markdown-reasoning text-xs text-gray-500 max-h-[7.2rem] overflow-y-auto rounded-lg border border-gray-700/50 bg-gray-900/50 p-2">
-            <ReactMarkdown remarkPlugins={[remarkGfm]}>{reasoning}</ReactMarkdown>
+const MessageBubble = ({ role, content, reasoning, image, streaming }) => {
+  const reasoningRef = useRef(null)
+
+  useEffect(() => {
+    if (reasoningRef.current) {
+      reasoningRef.current.scrollTop = reasoningRef.current.scrollHeight
+    }
+  }, [reasoning])
+
+  return (
+    <div className="flex gap-3">
+      {role === 'assistant' && (
+        <div className="mt-1 h-7 w-7 flex-shrink-0 rounded-full bg-gradient-to-br from-purple-500 to-cyan-400 flex items-center justify-center text-xs font-bold text-white">
+          AI
+        </div>
+      )}
+      <div className={`max-w-[80%] rounded-2xl px-4 py-2.5 ${role === 'user' ? 'bg-purple-600/80 text-white' : 'bg-gray-800 text-gray-200'}`}>
+        {image && <img src={image} alt="uploaded" className="mb-2 max-h-48 rounded-lg" />}
+        {reasoning && (
+          <div className="mb-2">
+            <div className="text-xs text-gray-400 mb-1">💭 Reasoning</div>
+            <div
+              ref={reasoningRef}
+              className="markdown-body markdown-reasoning text-xs text-gray-500 max-h-[7.2rem] overflow-y-auto rounded-lg border border-gray-700/50 bg-gray-900/50 p-2"
+            >
+              <ReactMarkdown remarkPlugins={[remarkGfm]}>{reasoning}</ReactMarkdown>
+            </div>
           </div>
-        </div>
-      )}
-      {role === 'assistant' && content ? (
-        <div className="markdown-body text-sm">
-          <ReactMarkdown remarkPlugins={[remarkGfm]}>{content}</ReactMarkdown>
-        </div>
-      ) : null}
-      {role === 'user' && (
-        <pre className="whitespace-pre-wrap break-words text-sm">{content}</pre>
-      )}
-      {streaming && <span className="inline-block h-4 w-2 animate-pulse bg-white ml-0.5" />}
-    </div>
-    {role === 'user' && (
-      <div className="mt-1 h-7 w-7 flex-shrink-0 rounded-full bg-gray-700 flex items-center justify-center text-xs font-bold">
-        U
+        )}
+        {role === 'assistant' && content ? (
+          <div className="markdown-body text-sm">
+            <ReactMarkdown remarkPlugins={[remarkGfm]}>{content}</ReactMarkdown>
+          </div>
+        ) : null}
+        {role === 'user' && (
+          <pre className="whitespace-pre-wrap break-words text-sm">{content}</pre>
+        )}
+        {streaming && <span className="inline-block h-4 w-2 animate-pulse bg-white ml-0.5" />}
       </div>
-    )}
-  </div>
-)
+      {role === 'user' && (
+        <div className="mt-1 h-7 w-7 flex-shrink-0 rounded-full bg-gray-700 flex items-center justify-center text-xs font-bold">
+          U
+        </div>
+      )}
+    </div>
+  )
+}
 
 export const MessageList = forwardRef(({ messages }, ref) => (
   <div className="flex-1 overflow-y-auto message-scroll">

@@ -9,7 +9,7 @@ export default function App() {
   const [serverUrl, setServerUrl] = useState('http://localhost:13305')
   const [connected, setConnected] = useState(false)
   const [models, setModels] = useState([])
-  const [selectedModel, setSelectedModel] = useState('')
+  const [selectedModel, setSelectedModel] = useState('user.Qwen3.6-35B-A3B-GGUF-UD-Q2_K_XL')
   const [messages, setMessages] = useState([])
   const [input, setInput] = useState('')
   const [imageUrl, setImageUrl] = useState('')
@@ -32,7 +32,10 @@ export default function App() {
       setApiBase(serverUrl)
       const modelList = await fetchModels()
       setModels(modelList)
-      if (modelList.length > 0) setSelectedModel(modelList[0])
+      if (modelList.length > 0) {
+        const qwenModel = modelList.find((m) => m.includes('Qwen3.6'))
+        setSelectedModel(qwenModel || modelList[0])
+      }
       setConnected(true)
     } catch (err) {
       setError(`Failed to connect: ${err.message}`)
@@ -42,6 +45,11 @@ export default function App() {
       setLoading(false)
     }
   }
+
+  // Auto-connect on page load
+  useEffect(() => {
+    handleConnect()
+  }, [])
 
   const handleSend = async () => {
     if (!selectedModel || (!input.trim() && !imageUrl)) return
