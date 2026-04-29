@@ -60,9 +60,6 @@ export const ChatInput = ({ input, setInput, imageUrl, streaming, loading, onSen
             </button>
           )}
         </div>
-        <div className="mt-2 flex items-center justify-between text-xs text-gray-600">
-          <span>Shift+Enter for new line</span>
-        </div>
       </div>
     </div>
   )
