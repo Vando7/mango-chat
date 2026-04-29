@@ -37,6 +37,15 @@ body {
   word-break: break-word;
 }
 
+/* Collapsible reasoning section */
+.reasoning-toggle {
+  transition: opacity 0.15s ease;
+}
+
+.reasoning-toggle:hover {
+  opacity: 0.8;
+}
+
 .markdown-body p {
   margin-bottom: 0.6em;
 }
@@ -171,4 +180,15 @@ body {
 .no-animate .dot-anim::after {
   animation: none;
   content: '...';
+}
+
+/* Collapsible reasoning */
+.collapsible-reasoning {
+  max-height: 0;
+  overflow: hidden;
+  transition: max-height 0.2s ease, padding 0.2s ease;
+}
+
+.collapsible-reasoning.expanded {
+  max-height: 500px;
 }

@@ -7,6 +7,29 @@ import { Sidebar } from './components/Sidebar'
 import { initDatabase, saveChat, saveMessages, getMessages } from './api/db'
 import './index.css'
 
+const MenuIcon = ({ open }) => (
+  <svg width="20" height="20" viewBox="0 0 20 20" fill="none">
+    {open ? (
+      <path d="M4 5h12M4 10h12M4 15h12" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
+    ) : (
+      <path d="M5 5h10M5 10h10M5 15h10" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
+    )}
+  </svg>
+)
+
+const SettingsIcon = ({ open }) => (
+  <svg width="20" height="20" viewBox="0 0 20 20" fill="none">
+    {open ? (
+      <path d="M5 5l10 10M15 5L5 15" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
+    ) : (
+      <>
+        <circle cx="10" cy="10" r="2.5" stroke="currentColor" strokeWidth="1.5"/>
+        <path d="M10 2.5v2M10 15.5v2M2.5 10h2M15.5 10h2M4.8 4.8l1.4 1.4M13.8 13.8l1.4 1.4M4.8 15.2l1.4-1.4M13.8 6.2l1.4-1.4" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
+      </>
+    )}
+  </svg>
+)
+
 export default function App() {
   const [serverUrl, setServerUrl] = useState('http://localhost:13305')
   const [connected, setConnected] = useState(false)
@@ -195,10 +218,10 @@ export default function App() {
           <div className="flex items-center gap-3">
             <button
               onClick={() => setSidebarOpen(!sidebarOpen)}
-              className="rounded-lg px-2 py-1.5 text-sm text-gray-400 hover:bg-gray-800 hover:text-white"
+              className="rounded-lg p-2 text-gray-400 hover:bg-gray-800 hover:text-white"
               title={sidebarOpen ? 'Close sidebar' : 'Open sidebar'}
             >
-              {sidebarOpen ? '☰' : '☰'}
+              <MenuIcon open={sidebarOpen} />
             </button>
             <div className="flex h-8 w-8 items-center justify-center rounded-full bg-gradient-to-br from-purple-500 to-cyan-400 text-sm font-bold text-white">
               C
@@ -213,9 +236,9 @@ export default function App() {
           </div>
           <button
             onClick={() => setShowSettings(!showSettings)}
-            className="rounded-lg px-3 py-1.5 text-sm text-gray-400 hover:bg-gray-800 hover:text-white"
+            className="rounded-lg p-2 text-gray-400 hover:bg-gray-800 hover:text-white"
           >
-            {showSettings ? '✕' : '⚙️'}
+            <SettingsIcon open={showSettings} />
           </button>
         </header>
 
