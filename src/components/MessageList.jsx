@@ -12,12 +12,12 @@ const MessageBubble = ({ role, content, reasoning, image, streaming }) => (
     <div className={`max-w-[80%] rounded-2xl px-4 py-2.5 ${role === 'user' ? 'bg-purple-600/80 text-white' : 'bg-gray-800 text-gray-200'}`}>
       {image && <img src={image} alt="uploaded" className="mb-2 max-h-48 rounded-lg" />}
       {reasoning && (
-        <details className="mb-2">
-          <summary className="text-xs text-gray-400 cursor-pointer hover:text-gray-300">💭 Reasoning</summary>
-          <div className="markdown-body markdown-reasoning text-xs text-gray-500 mt-1">
+        <div className="mb-2">
+          <div className="text-xs text-gray-400 mb-1">💭 Reasoning</div>
+          <div className="markdown-body markdown-reasoning text-xs text-gray-500 max-h-[7.2rem] overflow-y-auto rounded-lg border border-gray-700/50 bg-gray-900/50 p-2">
             <ReactMarkdown remarkPlugins={[remarkGfm]}>{reasoning}</ReactMarkdown>
           </div>
-        </details>
+        </div>
       )}
       {role === 'assistant' && content ? (
         <div className="markdown-body text-sm">
