@@ -12,11 +12,11 @@
 
 - **`src/App.jsx`** — Main app component, manages all state and orchestration
 - **`src/api/client.js`** — API client (`fetchModels`, `chat` async generator, `setApiBase`)
-- **`src/components/MessageList.jsx`** — Message rendering, auto-scroll (forwardRef), reasoning display
+- **`src/components/MessageList.jsx`** — Message rendering, auto-scroll (forwardRef), animated reasoning verb (mexican wave + dot cycle), hidden after streaming ends
 - **`src/components/ChatInput.jsx`** — Textarea with auto-expand, image upload, send button
 - **`src/components/Sidebar.jsx`** — Left sidebar with chat history list, search, new chat button, collapsible (toggle via ◀ handle)
 - **`src/components/SettingsPanel.jsx`** — Server URL input, model selector, connection status
-- **`src/api/db.js`** — SQLite database layer using sql.js (browser-based SQLite), IndexedDB persistence
+- **`src/api/db.js`** — SQLite database layer using sql.js (browser-based SQLite), IndexedDB persistence, idempotent saveMessages (DELETE-then-INSERT)
 - **`vite.config.js`** — Vite dev server with `/v1` proxy to `localhost:13305`
 - **`tailwind.config.js`** — Tailwind CSS config
 - **`dev.sh`** — Dev runner script (installs deps if missing, runs `npm run dev`)
@@ -38,6 +38,7 @@
 
 ## Common Patterns
 
+- **Persistence**: `saveMessages(chatId, msgs)` deletes existing msgs then inserts fresh set — idempotent, no duplicates. Called in `finally` block of `handleSend` to cover normal completion, errors, and aborts.
 - **Streaming**: `for await (const chunk of chat(history, model))` — accumulates text and reasoning separately
 - **Image upload**: FileReader reads as data URL (`data:image/...;base64,...`), sent as `image_url` object in API
 - **API format flexibility**: `fetchModels()` handles both `{models:[]}` and `{data:[]}` response formats
@@ -68,15 +69,10 @@ npm run test:api
 
 ## Recent Changes
 
-- Added left sidebar (`Sidebar.jsx`) with chat history list, search input, new chat button, collapsible (toggle via ◀ handle)
-- Removed user profile footer from sidebar
-- Added SQLite chat history persistence (`src/api/db.js`) using sql.js + IndexedDB
-  - Chat history saved/loaded from browser IndexedDB
-  - Messages stored per chat with role, content, image, reasoning, timestamps
-  - Sidebar shows real chats from DB, clicking loads a chat, delete removes it
-  - WASM file served from `public/sql-wasm-browser.wasm`
-- Messages persist to SQLite only when user clicks stop streaming (⏹️), using `messagesRef` to avoid stale state
-- Sidebar refreshes automatically when new chat is created via `chatRefreshKey` state
+- Animated reasoning verbs — each letter bounces in a staggered "mexican wave" pattern, dots cycle through `.`, `..`, `...`. Verb disappears entirely once streaming ends.
+- Fixed message persistence — now persists all messages (user + assistant) on every send, covering: normal completion, errors, and stop/abort. Uses idempotent `saveMessages()` (DELETE-then-INSERT) to prevent duplicates.
+- Fixed sidebar loading stuck — added try/catch/finally around `initDatabase()` so loading state always clears.
+- WASM fetch has 10s timeout to prevent infinite loading on network failure.
 
 ---
 
