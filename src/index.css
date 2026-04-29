@@ -1,0 +1,32 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+body {
+  margin: 0;
+  background: #0f0f0f;
+  color: #e5e5e5;
+}
+
+#root {
+  width: 100%;
+  min-height: 100vh;
+}
+
+.message-scroll {
+  scrollbar-width: thin;
+  scrollbar-color: #333 transparent;
+}
+
+.message-scroll::-webkit-scrollbar {
+  width: 6px;
+}
+
+.message-scroll::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.message-scroll::-webkit-scrollbar-thumb {
+  background: #333;
+  border-radius: 3px;
+}
