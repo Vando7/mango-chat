@@ -4,7 +4,7 @@ import { MessageList } from './components/MessageList'
 import { ChatInput } from './components/ChatInput'
 import { SettingsPanel } from './components/SettingsPanel'
 import { Sidebar } from './components/Sidebar'
-import { initDatabase, saveChat, saveMessage, getMessages } from './api/db'
+import { initDatabase, saveChat, saveMessages, getMessages } from './api/db'
 import './index.css'
 
 export default function App() {
@@ -61,9 +61,7 @@ export default function App() {
   const persistMessages = async (chatId, msgs) => {
     try {
       await initDatabase()
-      for (const msg of msgs) {
-        saveMessage(chatId, msg.role, msg.content, msg.image || null, msg.reasoning || null)
-      }
+      saveMessages(chatId, msgs)
     } catch (e) {
       console.error('Failed to persist messages:', e)
     }
@@ -153,6 +151,10 @@ export default function App() {
     } finally {
       setLoading(false)
       setStreaming(false)
+      // Persist all messages (user + assistant) after streaming ends
+      // Covers: normal completion, error, or abort (stop button)
+      persistMessages(currentChatIdRef.current, messagesRef.current)
+      setChatRefreshKey((prev) => prev + 1)
     }
   }
 
@@ -167,9 +169,6 @@ export default function App() {
       return updated
     })
     setStreaming(false)
-    // Persist to SQLite when user stops streaming
-    persistMessages(currentChatIdRef.current, messagesRef.current)
-    setChatRefreshKey((prev) => prev + 1)
   }
 
   const handleImageUpload = (e) => {

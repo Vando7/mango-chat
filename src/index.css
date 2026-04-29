@@ -124,3 +124,51 @@ body {
   background-size: 200% 200%;
   animation: gradient-shift 3s ease infinite;
 }
+
+/* Mexican wave — each letter bounces with staggered delay */
+@keyframes letter-wave {
+  0%, 100% {
+    transform: translateY(0);
+  }
+  50% {
+    transform: translateY(-0.35em);
+  }
+}
+
+/* Dot cycling: . .. ... */
+@keyframes dot-cycle {
+  0% { content: '.'; }
+  33% { content: '..'; }
+  66% { content: '...'; }
+}
+
+.verb-letters {
+  display: inline-flex;
+  gap: 0.04em;
+}
+
+.verb-letter {
+  display: inline-block;
+  --delay: 0s;
+  animation: letter-wave 0.6s ease-in-out infinite;
+  animation-delay: var(--delay);
+}
+
+.dot-anim {
+  display: inline-block;
+  width: 1ch;
+}
+
+.dot-anim::after {
+  content: '.';
+  animation: dot-cycle 1.5s steps(1) infinite;
+}
+
+.no-animate .verb-letter {
+  animation: none;
+}
+
+.no-animate .dot-anim::after {
+  animation: none;
+  content: '...';
+}

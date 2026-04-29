@@ -11,12 +11,21 @@ let wasmBlobUrl = null
 async function initDatabase() {
   if (dbReady) return db
 
-  // Load WASM file
+  // Load WASM file with timeout
   if (!wasmBlobUrl) {
-    const response = await fetch('/sql-wasm-browser.wasm')
-    const arrayBuffer = await response.arrayBuffer()
-    const blob = new Blob([arrayBuffer], { type: 'application/wasm' })
-    wasmBlobUrl = URL.createObjectURL(blob)
+    const controller = new AbortController()
+    const timeout = setTimeout(() => controller.abort(), 10000)
+    try {
+      const response = await fetch('/sql-wasm-browser.wasm', { signal: controller.signal })
+      clearTimeout(timeout)
+      if (!response.ok) throw new Error(`WASM fetch failed: ${response.status}`)
+      const arrayBuffer = await response.arrayBuffer()
+      const blob = new Blob([arrayBuffer], { type: 'application/wasm' })
+      wasmBlobUrl = URL.createObjectURL(blob)
+    } catch (e) {
+      clearTimeout(timeout)
+      throw new Error(`Failed to load WASM: ${e.message}`)
+    }
   }
 
   const { default: initSqlJs } = await import('sql.js')
@@ -143,6 +152,20 @@ export function saveMessage(chatId, role, content, image, reasoning) {
   )
   // Also update the chat's updated_at
   db.run('UPDATE chats SET updated_at = ? WHERE id = ?', [Date.now(), chatId])
+  persist()
+}
+
+export function saveMessages(chatId, messages) {
+  // Delete existing messages for this chat, then insert fresh set
+  db.run('DELETE FROM messages WHERE chat_id = ?', [chatId])
+  const now = Date.now()
+  for (const msg of messages) {
+    db.run(
+      'INSERT INTO messages (chat_id, role, content, image, reasoning, created_at) VALUES (?, ?, ?, ?, ?, ?)',
+      [chatId, msg.role, msg.content || '', msg.image || null, msg.reasoning || null, now]
+    )
+  }
+  db.run('UPDATE chats SET updated_at = ? WHERE id = ?', [now, chatId])
   persist()
 }
 

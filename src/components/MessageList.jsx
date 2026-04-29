@@ -54,15 +54,28 @@ const MessageBubble = ({ role, content, reasoning, image, streaming }) => {
         {image && <img src={image} alt="uploaded" className="mb-2 max-h-48 rounded-lg" />}
         {reasoning && (
           <div className="mb-2">
-            <div className="flex items-center gap-2 mb-1">
-              <span className="relative flex h-1.5 w-1.5">
-                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-purple-400 opacity-75" />
-                <span className="relative inline-flex h-1.5 w-1.5 rounded-full bg-purple-400" />
-              </span>
-              <span className="text-xs font-medium bg-gradient-to-r from-purple-400 via-violet-400 to-cyan-400 bg-clip-text text-transparent animated-gradient">
-                {reasoningVerb}...
-              </span>
-            </div>
+            {streaming && (
+              <div className="flex items-center gap-2 mb-1">
+                <span className="relative flex h-1.5 w-1.5">
+                  <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-purple-400 opacity-75" />
+                  <span className="relative inline-flex h-1.5 w-1.5 rounded-full bg-purple-400" />
+                </span>
+                <span className="text-xs font-medium bg-gradient-to-r from-purple-400 via-violet-400 to-cyan-400 bg-clip-text text-transparent animated-gradient">
+                  <span className="verb-letters">
+                    {reasoningVerb.split('').map((letter, i) => (
+                      <span
+                        key={i}
+                        className={`verb-letter ${letter === ' ' ? 'mr-1' : ''}`}
+                        style={{ '--delay': `${i * 0.08}s` }}
+                      >
+                        {letter}
+                      </span>
+                    ))}
+                  </span>
+                  <span className="dot-anim" />
+                </span>
+              </div>
+            )}
             <div
               ref={reasoningRef}
               className="markdown-body markdown-reasoning text-xs text-gray-500 max-h-[7.2rem] overflow-y-auto rounded-lg border border-gray-700/50 bg-gray-900/50 p-2"

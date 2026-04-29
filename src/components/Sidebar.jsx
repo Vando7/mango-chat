@@ -9,10 +9,16 @@ export const Sidebar = ({ open, onToggle, refreshKey, onNewChat, onLoadChat }) =
   useEffect(() => {
     const loadChats = async () => {
       setLoading(true)
-      await initDatabase()
-      const chats = getChats()
-      setChatHistory(chats)
-      setLoading(false)
+      try {
+        await initDatabase()
+        const chats = getChats()
+        setChatHistory(chats)
+      } catch (e) {
+        console.error('Failed to load chat history:', e)
+        setChatHistory([])
+      } finally {
+        setLoading(false)
+      }
     }
     loadChats()
   }, [refreshKey])
