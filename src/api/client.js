@@ -6,11 +6,12 @@ export const setApiBase = (url) => {
 
 export const getApiBase = () => API_BASE
 
-const request = async (path, body) => {
+const request = async (path, body, signal) => {
   const res = await fetch(`${getApiBase()}${path}`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
+    signal,
   })
   if (!res.ok) throw new Error(`HTTP ${res.status}: ${await res.text()}`)
   return res
@@ -25,7 +26,7 @@ export const fetchModels = async () => {
   return list.map((m) => m.id || m.name || m)
 }
 
-export async function* chat(history, selectedModel) {
+export async function* chat(history, selectedModel, signal) {
   const messages = history.map((msg) => {
     if (msg.image) {
       return {
@@ -39,41 +40,49 @@ export async function* chat(history, selectedModel) {
     return { role: msg.role, content: msg.content }
   })
 
-  const res = await request('/v1/chat/completions', { model: selectedModel, messages, stream: true })
+  const res = await request('/v1/chat/completions', { model: selectedModel, messages, stream: true }, signal)
 
   const reader = res.body.getReader()
   const decoder = new TextDecoder()
   let fullText = ''
   let reasoningText = ''
 
-  while (true) {
-    const { done, value } = await reader.read()
-    if (done) break
+  try {
+    while (true) {
+      const { done, value } = await reader.read()
+      if (done) break
 
-    const text = decoder.decode(value, { stream: true })
-    const lines = text.split('\n').filter((l) => l.trim().startsWith('data:'))
+      const text = decoder.decode(value, { stream: true })
+      const lines = text.split('\n').filter((l) => l.trim().startsWith('data:'))
 
-    for (const line of lines) {
-      const data = line.trim().slice(5).trim()
-      if (data === '[DONE]' || !data) continue
-      try {
-        const parsed = JSON.parse(data)
-        const delta = parsed.choices?.[0]?.delta
-        if (!delta) continue
+      for (const line of lines) {
+        const data = line.trim().slice(5).trim()
+        if (data === '[DONE]' || !data) continue
+        try {
+          const parsed = JSON.parse(data)
+          const delta = parsed.choices?.[0]?.delta
+          if (!delta) continue
 
-        // Collect reasoning_content
-        if (delta.reasoning_content) {
-          reasoningText += delta.reasoning_content
-        }
+          // Collect reasoning_content
+          if (delta.reasoning_content) {
+            reasoningText += delta.reasoning_content
+          }
 
-        // Collect actual content
-        if (delta.content) {
-          fullText += delta.content
-        }
+          // Collect actual content
+          if (delta.content) {
+            fullText += delta.content
+          }
 
-        // Yield whenever there's any new data
-        yield { text: fullText, reasoning: reasoningText }
-      } catch {}
+          // Yield whenever there's any new data
+          yield { text: fullText, reasoning: reasoningText }
+        } catch {}
+      }
+    }
+  } catch (err) {
+    if (err.name === 'AbortError') {
+      // User stopped generation - ignore
+    } else {
+      throw err
     }
   }
 }

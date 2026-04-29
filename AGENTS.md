@@ -6,6 +6,7 @@
 - Use JSX consistently. No new `.ts` files unless explicitly requested.
 - Run `npx vite build` to verify before confirming changes work.
 - The Vite dev server proxies `/v1/**` to the LLM backend — don't add CORS handling in the frontend.
+- **Never push to git on your own accord.** Always ask the user first before running `git push`. You may commit changes without asking, but pushing requires explicit approval.
 
 ## Architecture
 

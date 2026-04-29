@@ -19,6 +19,7 @@ export default function App() {
   const [showSettings, setShowSettings] = useState(false)
 
   const messagesEndRef = useRef(null)
+  const abortControllerRef = useRef(null)
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
@@ -55,8 +56,11 @@ export default function App() {
     setMessages((prev) => [...prev, { role: 'assistant', content: '', streaming: true }])
     setStreaming(true)
 
+    abortControllerRef.current = new AbortController()
+    const signal = abortControllerRef.current.signal
+
     try {
-      const stream = chat(newHistory, selectedModel)
+      const stream = chat(newHistory, selectedModel, signal)
 
       for await (const chunk of stream) {
         setMessages((prev) => {
@@ -91,6 +95,19 @@ export default function App() {
       setLoading(false)
       setStreaming(false)
     }
+  }
+
+  const handleStop = () => {
+    abortControllerRef.current?.abort()
+    setMessages((prev) => {
+      const updated = [...prev]
+      const last = updated[updated.length - 1]
+      if (last?.role === 'assistant' && last?.streaming) {
+        updated[updated.length - 1] = { ...last, streaming: false }
+      }
+      return updated
+    })
+    setStreaming(false)
   }
 
   const handleImageUpload = (e) => {
@@ -149,6 +166,7 @@ export default function App() {
         streaming={streaming}
         loading={loading}
         onSend={handleSend}
+        onStop={handleStop}
         onImageUpload={handleImageUpload}
         onRemoveImage={removeImage}
       />

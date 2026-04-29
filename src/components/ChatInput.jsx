@@ -1,6 +1,6 @@
 import { useRef, useEffect } from 'react'
 
-export const ChatInput = ({ input, setInput, imageUrl, streaming, loading, onSend, onImageUpload, onRemoveImage }) => {
+export const ChatInput = ({ input, setInput, imageUrl, streaming, loading, onSend, onStop, onImageUpload, onRemoveImage }) => {
   const fileInputRef = useRef(null)
   const textareaRef = useRef(null)
 
@@ -43,13 +43,22 @@ export const ChatInput = ({ input, setInput, imageUrl, streaming, loading, onSen
             rows={1}
             className="flex-1 resize-none rounded-lg border border-gray-700 bg-gray-900 px-3 py-2.5 text-sm text-white placeholder-gray-500 focus:border-purple-500 focus:outline-none"
           />
-          <button
-            onClick={onSend}
-            disabled={loading || streaming}
-            className="flex-shrink-0 rounded-lg bg-purple-600 px-4 py-2.5 text-sm font-medium text-white hover:bg-purple-500 disabled:opacity-50"
-          >
-            {streaming ? '⏳' : '➤'}
-          </button>
+          {streaming ? (
+            <button
+              onClick={onStop}
+              className="flex-shrink-0 rounded-lg bg-red-600 px-4 py-2.5 text-sm font-medium text-white hover:bg-red-500"
+            >
+              ⏹️
+            </button>
+          ) : (
+            <button
+              onClick={onSend}
+              disabled={loading}
+              className="flex-shrink-0 rounded-lg bg-purple-600 px-4 py-2.5 text-sm font-medium text-white hover:bg-purple-500 disabled:opacity-50"
+            >
+              ➤
+            </button>
+          )}
         </div>
         <div className="mt-2 flex items-center justify-between text-xs text-gray-600">
           <span>Shift+Enter for new line</span>
