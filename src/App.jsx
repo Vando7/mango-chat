@@ -1,8 +1,10 @@
-import { useState, useRef, useEffect } from 'react'
+import { useState, useRef, useEffect, useCallback } from 'react'
 import { chat, fetchModels, setApiBase } from './api/client'
 import { MessageList } from './components/MessageList'
 import { ChatInput } from './components/ChatInput'
 import { SettingsPanel } from './components/SettingsPanel'
+import { Sidebar } from './components/Sidebar'
+import { initDatabase, saveChat, saveMessage, getMessages } from './api/db'
 import './index.css'
 
 export default function App() {
@@ -17,9 +19,14 @@ export default function App() {
   const [error, setError] = useState('')
   const [streaming, setStreaming] = useState(false)
   const [showSettings, setShowSettings] = useState(false)
+  const [sidebarOpen, setSidebarOpen] = useState(true)
+  const [chatRefreshKey, setChatRefreshKey] = useState(0)
 
   const messagesEndRef = useRef(null)
   const abortControllerRef = useRef(null)
+  const currentChatIdRef = useRef(null)
+  const messagesRef = useRef([])
+  messagesRef.current = messages
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
@@ -51,6 +58,43 @@ export default function App() {
     handleConnect()
   }, [])
 
+  const persistMessages = async (chatId, msgs) => {
+    try {
+      await initDatabase()
+      for (const msg of msgs) {
+        saveMessage(chatId, msg.role, msg.content, msg.image || null, msg.reasoning || null)
+      }
+    } catch (e) {
+      console.error('Failed to persist messages:', e)
+    }
+  }
+
+  const handleLoadChat = async (chatId) => {
+    try {
+      await initDatabase()
+      const dbMessages = getMessages(chatId)
+      currentChatIdRef.current = chatId
+      setMessages(dbMessages.map((m) => ({
+        role: m.role,
+        content: m.content,
+        image: m.image,
+        reasoning: m.reasoning,
+        streaming: false,
+      })))
+      setInput('')
+      setImageUrl('')
+    } catch (e) {
+      console.error('Failed to load chat:', e)
+    }
+  }
+
+  const handleNewChat = useCallback(() => {
+    currentChatIdRef.current = null
+    setMessages([])
+    setInput('')
+    setImageUrl('')
+  }, [])
+
   const handleSend = async () => {
     if (!selectedModel || (!input.trim() && !imageUrl)) return
 
@@ -60,6 +104,13 @@ export default function App() {
     setInput('')
     setImageUrl('')
     setLoading(true)
+
+    // Create chat ID if new
+    if (!currentChatIdRef.current) {
+      currentChatIdRef.current = 'chat-' + Date.now() + '-' + Math.random().toString(36).slice(2, 8)
+      saveChat(currentChatIdRef.current, input.trim().slice(0, 60))
+      setChatRefreshKey((prev) => prev + 1)
+    }
 
     setMessages((prev) => [...prev, { role: 'assistant', content: '', streaming: true }])
     setStreaming(true)
@@ -116,6 +167,9 @@ export default function App() {
       return updated
     })
     setStreaming(false)
+    // Persist to SQLite when user stops streaming
+    persistMessages(currentChatIdRef.current, messagesRef.current)
+    setChatRefreshKey((prev) => prev + 1)
   }
 
   const handleImageUpload = (e) => {
@@ -129,55 +183,71 @@ export default function App() {
   const removeImage = () => setImageUrl('')
 
   return (
-    <div className="flex h-screen flex-col">
-      <header className="flex items-center justify-between border-b border-gray-800 bg-black px-4 py-3">
-        <div className="flex items-center gap-3">
-          <div className="flex h-8 w-8 items-center justify-center rounded-full bg-gradient-to-br from-purple-500 to-cyan-400 text-sm font-bold text-white">
-            C
-          </div>
-          <h1 className="text-lg font-semibold tracking-tight">Chat</h1>
-          {connected && (
-            <span className="inline-flex items-center gap-1.5 rounded-full bg-green-500/10 px-2 py-0.5 text-xs text-green-400">
-              <span className="h-1.5 w-1.5 rounded-full bg-green-400 animate-pulse"></span>
-              Connected
-            </span>
-          )}
-        </div>
-        <button
-          onClick={() => setShowSettings(!showSettings)}
-          className="rounded-lg px-3 py-1.5 text-sm text-gray-400 hover:bg-gray-800 hover:text-white"
-        >
-          {showSettings ? '✕' : '⚙️'}
-        </button>
-      </header>
-
-      {showSettings && (
-        <SettingsPanel
-          serverUrl={serverUrl}
-          setServerUrl={setServerUrl}
-          loading={loading}
-          error={error}
-          connected={connected}
-          models={models}
-          selectedModel={selectedModel}
-          setSelectedModel={setSelectedModel}
-          onConnect={handleConnect}
-        />
-      )}
-
-      <MessageList ref={messagesEndRef} messages={messages} />
-
-      <ChatInput
-        input={input}
-        setInput={setInput}
-        imageUrl={imageUrl}
-        streaming={streaming}
-        loading={loading}
-        onSend={handleSend}
-        onStop={handleStop}
-        onImageUpload={handleImageUpload}
-        onRemoveImage={removeImage}
+    <div className="flex h-screen">
+      <Sidebar
+        open={sidebarOpen}
+        onToggle={() => setSidebarOpen(!sidebarOpen)}
+        refreshKey={chatRefreshKey}
+        onNewChat={handleNewChat}
+        onLoadChat={handleLoadChat}
       />
+      <div className="flex flex-1 flex-col">
+        <header className="flex items-center justify-between border-b border-gray-800 bg-black px-4 py-3">
+          <div className="flex items-center gap-3">
+            <button
+              onClick={() => setSidebarOpen(!sidebarOpen)}
+              className="rounded-lg px-2 py-1.5 text-sm text-gray-400 hover:bg-gray-800 hover:text-white"
+              title={sidebarOpen ? 'Close sidebar' : 'Open sidebar'}
+            >
+              {sidebarOpen ? '☰' : '☰'}
+            </button>
+            <div className="flex h-8 w-8 items-center justify-center rounded-full bg-gradient-to-br from-purple-500 to-cyan-400 text-sm font-bold text-white">
+              C
+            </div>
+            <h1 className="text-lg font-semibold tracking-tight">Chat</h1>
+            {connected && (
+              <span className="inline-flex items-center gap-1.5 rounded-full bg-green-500/10 px-2 py-0.5 text-xs text-green-400">
+                <span className="h-1.5 w-1.5 rounded-full bg-green-400 animate-pulse"></span>
+                Connected
+              </span>
+            )}
+          </div>
+          <button
+            onClick={() => setShowSettings(!showSettings)}
+            className="rounded-lg px-3 py-1.5 text-sm text-gray-400 hover:bg-gray-800 hover:text-white"
+          >
+            {showSettings ? '✕' : '⚙️'}
+          </button>
+        </header>
+
+        {showSettings && (
+          <SettingsPanel
+            serverUrl={serverUrl}
+            setServerUrl={setServerUrl}
+            loading={loading}
+            error={error}
+            connected={connected}
+            models={models}
+            selectedModel={selectedModel}
+            setSelectedModel={setSelectedModel}
+            onConnect={handleConnect}
+          />
+        )}
+
+        <MessageList ref={messagesEndRef} messages={messages} />
+
+        <ChatInput
+          input={input}
+          setInput={setInput}
+          imageUrl={imageUrl}
+          streaming={streaming}
+          loading={loading}
+          onSend={handleSend}
+          onStop={handleStop}
+          onImageUpload={handleImageUpload}
+          onRemoveImage={removeImage}
+        />
+      </div>
     </div>
   )
 }

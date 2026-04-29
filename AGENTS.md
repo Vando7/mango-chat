@@ -14,7 +14,9 @@
 - **`src/api/client.js`** — API client (`fetchModels`, `chat` async generator, `setApiBase`)
 - **`src/components/MessageList.jsx`** — Message rendering, auto-scroll (forwardRef), reasoning display
 - **`src/components/ChatInput.jsx`** — Textarea with auto-expand, image upload, send button
+- **`src/components/Sidebar.jsx`** — Left sidebar with chat history list, search, new chat button, collapsible (toggle via ◀ handle)
 - **`src/components/SettingsPanel.jsx`** — Server URL input, model selector, connection status
+- **`src/api/db.js`** — SQLite database layer using sql.js (browser-based SQLite), IndexedDB persistence
 - **`vite.config.js`** — Vite dev server with `/v1` proxy to `localhost:13305`
 - **`tailwind.config.js`** — Tailwind CSS config
 - **`dev.sh`** — Dev runner script (installs deps if missing, runs `npm run dev`)
@@ -63,6 +65,20 @@ npm run check
 npm run test:stream
 npm run test:api
 ```
+
+## Recent Changes
+
+- Added left sidebar (`Sidebar.jsx`) with chat history list, search input, new chat button, collapsible (toggle via ◀ handle)
+- Removed user profile footer from sidebar
+- Added SQLite chat history persistence (`src/api/db.js`) using sql.js + IndexedDB
+  - Chat history saved/loaded from browser IndexedDB
+  - Messages stored per chat with role, content, image, reasoning, timestamps
+  - Sidebar shows real chats from DB, clicking loads a chat, delete removes it
+  - WASM file served from `public/sql-wasm-browser.wasm`
+- Messages persist to SQLite only when user clicks stop streaming (⏹️), using `messagesRef` to avoid stale state
+- Sidebar refreshes automatically when new chat is created via `chatRefreshKey` state
+
+---
 
 ## Recent Changes
 
