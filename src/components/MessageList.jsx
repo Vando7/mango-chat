@@ -14,7 +14,9 @@ const MessageBubble = ({ role, content, reasoning, image, streaming }) => (
       {reasoning && (
         <details className="mb-2">
           <summary className="text-xs text-gray-400 cursor-pointer hover:text-gray-300">💭 Reasoning</summary>
-          <pre className="whitespace-pre-wrap break-words text-xs text-gray-500 mt-1">{reasoning}</pre>
+          <div className="markdown-body markdown-reasoning text-xs text-gray-500 mt-1">
+            <ReactMarkdown remarkPlugins={[remarkGfm]}>{reasoning}</ReactMarkdown>
+          </div>
         </details>
       )}
       {role === 'assistant' && content ? (

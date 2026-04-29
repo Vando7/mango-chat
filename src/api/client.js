@@ -61,17 +61,18 @@ export async function* chat(history, selectedModel) {
         const delta = parsed.choices?.[0]?.delta
         if (!delta) continue
 
-        // Collect reasoning_content separately (not shown in UI)
+        // Collect reasoning_content
         if (delta.reasoning_content) {
           reasoningText += delta.reasoning_content
-          continue
         }
 
         // Collect actual content
         if (delta.content) {
           fullText += delta.content
-          yield { text: fullText, reasoning: reasoningText }
         }
+
+        // Yield whenever there's any new data
+        yield { text: fullText, reasoning: reasoningText }
       } catch {}
     }
   }
