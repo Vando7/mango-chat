@@ -107,3 +107,20 @@ body {
   border-top: 1px solid rgba(255, 255, 255, 0.15);
   margin: 0.8em 0;
 }
+
+@keyframes gradient-shift {
+  0% {
+    background-position: 0% 50%;
+  }
+  50% {
+    background-position: 100% 50%;
+  }
+  100% {
+    background-position: 0% 50%;
+  }
+}
+
+.animated-gradient {
+  background-size: 200% 200%;
+  animation: gradient-shift 3s ease infinite;
+}

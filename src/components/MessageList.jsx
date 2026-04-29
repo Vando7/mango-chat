@@ -1,15 +1,47 @@
-import { forwardRef, useEffect, useRef } from 'react'
+import { forwardRef, useEffect, useRef, useState } from 'react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 
+const REASONING_VERBS = [
+  'Thinking',
+  'Analyzing',
+  'Planning',
+  'Exploring',
+  'Breaking down',
+  'Mapping',
+  'Structuring',
+  'Processing',
+  'Digging deeper',
+  'Synthesizing',
+  'Working through',
+  'Connecting dots',
+]
+
 const MessageBubble = ({ role, content, reasoning, image, streaming }) => {
   const reasoningRef = useRef(null)
+  const [reasoningVerb, setReasoningVerb] = useState(() =>
+    REASONING_VERBS[Math.floor(Math.random() * REASONING_VERBS.length)]
+  )
+  const startedRef = useRef(false)
 
   useEffect(() => {
     if (reasoningRef.current) {
       reasoningRef.current.scrollTop = reasoningRef.current.scrollHeight
     }
   }, [reasoning])
+
+  // Start verb cycling once reasoning appears (runs once)
+  useEffect(() => {
+    if (startedRef.current) return
+    startedRef.current = true
+    const interval = setInterval(() => {
+      setReasoningVerb((prev) => {
+        const next = REASONING_VERBS[Math.floor(Math.random() * REASONING_VERBS.length)]
+        return next === prev ? REASONING_VERBS[(REASONING_VERBS.indexOf(prev) + 1) % REASONING_VERBS.length] : next
+      })
+    }, 2000)
+    return () => clearInterval(interval)
+  }, [])
 
   return (
     <div className="flex gap-3">
@@ -22,7 +54,15 @@ const MessageBubble = ({ role, content, reasoning, image, streaming }) => {
         {image && <img src={image} alt="uploaded" className="mb-2 max-h-48 rounded-lg" />}
         {reasoning && (
           <div className="mb-2">
-            <div className="text-xs text-gray-400 mb-1">💭 Reasoning</div>
+            <div className="flex items-center gap-2 mb-1">
+              <span className="relative flex h-1.5 w-1.5">
+                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-purple-400 opacity-75" />
+                <span className="relative inline-flex h-1.5 w-1.5 rounded-full bg-purple-400" />
+              </span>
+              <span className="text-xs font-medium bg-gradient-to-r from-purple-400 via-violet-400 to-cyan-400 bg-clip-text text-transparent animated-gradient">
+                {reasoningVerb}...
+              </span>
+            </div>
             <div
               ref={reasoningRef}
               className="markdown-body markdown-reasoning text-xs text-gray-500 max-h-[7.2rem] overflow-y-auto rounded-lg border border-gray-700/50 bg-gray-900/50 p-2"
