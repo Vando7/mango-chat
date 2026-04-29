@@ -1,4 +1,6 @@
 import { forwardRef, useEffect } from 'react'
+import ReactMarkdown from 'react-markdown'
+import remarkGfm from 'remark-gfm'
 
 const MessageBubble = ({ role, content, reasoning, image, streaming }) => (
   <div className="flex gap-3">
@@ -15,7 +17,14 @@ const MessageBubble = ({ role, content, reasoning, image, streaming }) => (
           <pre className="whitespace-pre-wrap break-words text-xs text-gray-500 mt-1">{reasoning}</pre>
         </details>
       )}
-      <pre className="whitespace-pre-wrap break-words text-sm">{content}</pre>
+      {role === 'assistant' && content ? (
+        <div className="markdown-body text-sm">
+          <ReactMarkdown remarkPlugins={[remarkGfm]}>{content}</ReactMarkdown>
+        </div>
+      ) : null}
+      {role === 'user' && (
+        <pre className="whitespace-pre-wrap break-words text-sm">{content}</pre>
+      )}
       {streaming && <span className="inline-block h-4 w-2 animate-pulse bg-white ml-0.5" />}
     </div>
     {role === 'user' && (
