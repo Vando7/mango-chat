@@ -65,7 +65,7 @@ export default function App() {
   // active[pos]   = currently-selected version index for that position
   const [convo, setConvo] = useState(EMPTY_CONVO)
   const [input, setInput] = useState('')
-  const [imageUrl, setImageUrl] = useState('')
+  const [imageUrls, setImageUrls] = useState([])
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
   const [streaming, setStreaming] = useState(false)
@@ -169,7 +169,7 @@ export default function App() {
       )
       setConvo({ versions: cleanVersions, active })
       setInput('')
-      setImageUrl('')
+      setImageUrls([])
     } catch (e) {
       console.error('Failed to load chat:', e)
     }
@@ -179,7 +179,7 @@ export default function App() {
     currentChatIdRef.current = null
     setConvo(EMPTY_CONVO)
     setInput('')
-    setImageUrl('')
+    setImageUrls([])
   }, [])
 
   const runStream = async (history, chatId, position, version) => {
@@ -248,13 +248,13 @@ export default function App() {
   }
 
   const handleSend = async () => {
-    if (!selectedModel || (!input.trim() && !imageUrl)) return
+    if (!selectedModel || (!input.trim() && imageUrls.length === 0)) return
     if (streaming) return
 
     const userContent = input.trim()
-    const userImage = imageUrl || null
-    const userMsg = { role: 'user', content: userContent, image: userImage, reasoning: null }
-    const assistantMsg = { role: 'assistant', content: '', image: null, reasoning: null, streaming: true }
+    const userImages = imageUrls.slice()
+    const userMsg = { role: 'user', content: userContent, images: userImages, reasoning: null, model: null }
+    const assistantMsg = { role: 'assistant', content: '', images: [], reasoning: null, model: selectedModel, streaming: true }
 
     // Create chat row if this is the first message.
     let chatId = currentChatIdRef.current
@@ -270,8 +270,8 @@ export default function App() {
       if (isNewChat) {
         saveChat(chatId, userContent.slice(0, 60) || 'New chat')
       }
-      appendMessage(chatId, 'user', userContent, userImage, null)
-      ;({ position: assistantPos } = appendMessage(chatId, 'assistant', '', null, null))
+      appendMessage(chatId, 'user', userContent, userImages, null, null)
+      ;({ position: assistantPos } = appendMessage(chatId, 'assistant', '', null, null, selectedModel))
     } catch (e) {
       console.error('Failed to persist initial messages:', e)
       setError('Failed to save message: ' + e.message)
@@ -283,9 +283,9 @@ export default function App() {
     const historyToSend = [
       ...convo.versions.map((vs, p) => {
         const v = vs[convo.active[p]]
-        return { role: v.role, content: v.content, image: v.image }
+        return { role: v.role, content: v.content, images: v.images || [] }
       }),
-      { role: userMsg.role, content: userMsg.content, image: userMsg.image },
+      { role: userMsg.role, content: userMsg.content, images: userMsg.images },
     ]
 
     setConvo((c) => ({
@@ -293,7 +293,7 @@ export default function App() {
       active: [...c.active, 0, 0],
     }))
     setInput('')
-    setImageUrl('')
+    setImageUrls([])
     setChatRefreshKey((prev) => prev + 1)
 
     await runStream(historyToSend, chatId, assistantPos, 0)
@@ -327,14 +327,14 @@ export default function App() {
     let newVersionIdx
     try {
       await initDatabase()
-      ;({ version: newVersionIdx } = addNewVersion(chatId, position, 'assistant', '', null, null))
+      ;({ version: newVersionIdx } = addNewVersion(chatId, position, 'assistant', '', null, null, selectedModel))
     } catch (e) {
       console.error('Failed to add new version:', e)
       setError('Failed to regenerate: ' + e.message)
       return
     }
 
-    const newAssistant = { role: 'assistant', content: '', image: null, reasoning: null, streaming: true }
+    const newAssistant = { role: 'assistant', content: '', images: [], reasoning: null, model: selectedModel, streaming: true }
     setConvo((c) => {
       const versions = c.versions.map((vs, p) => {
         if (p !== position) return vs
@@ -351,7 +351,7 @@ export default function App() {
     const historyToSend = []
     for (let p = 0; p < position; p++) {
       const v = convo.versions[p][convo.active[p]]
-      historyToSend.push({ role: v.role, content: v.content, image: v.image })
+      historyToSend.push({ role: v.role, content: v.content, images: v.images || [] })
     }
 
     await runStream(historyToSend, chatId, position, newVersionIdx)
@@ -393,15 +393,48 @@ export default function App() {
     setChatRefreshKey((prev) => prev + 1)
   }
 
-  const handleImageUpload = (e) => {
-    const file = e.target.files?.[0]
-    if (!file) return
+  const readFileAsDataUrl = (file) => new Promise((resolve, reject) => {
     const reader = new FileReader()
-    reader.onload = () => setImageUrl(reader.result)
+    reader.onload = () => resolve(reader.result)
+    reader.onerror = () => reject(reader.error)
     reader.readAsDataURL(file)
+  })
+
+  const addImageFiles = async (files) => {
+    const imageFiles = Array.from(files).filter((f) => f && f.type?.startsWith('image/'))
+    if (imageFiles.length === 0) return
+    try {
+      const dataUrls = await Promise.all(imageFiles.map(readFileAsDataUrl))
+      setImageUrls((prev) => [...prev, ...dataUrls])
+    } catch (e) {
+      console.error('Failed to read image:', e)
+    }
   }
 
-  const removeImage = () => setImageUrl('')
+  const handleImageUpload = (e) => {
+    addImageFiles(e.target.files || [])
+    // Reset the input so re-selecting the same file fires onChange again.
+    e.target.value = ''
+  }
+
+  const handlePasteImages = (e) => {
+    const items = e.clipboardData?.items
+    if (!items) return
+    const files = []
+    for (const item of items) {
+      if (item.kind === 'file' && item.type?.startsWith('image/')) {
+        const file = item.getAsFile()
+        if (file) files.push(file)
+      }
+    }
+    if (files.length > 0) {
+      e.preventDefault()
+      addImageFiles(files)
+    }
+  }
+
+  const removeImageAt = (index) =>
+    setImageUrls((prev) => prev.filter((_, i) => i !== index))
 
   const toggleSettings = () => {
     if (showSettings) {
@@ -472,13 +505,14 @@ export default function App() {
         <ChatInput
           input={input}
           setInput={setInput}
-          imageUrl={imageUrl}
+          imageUrls={imageUrls}
           streaming={streaming}
           loading={loading}
           onSend={handleSend}
           onStop={handleStop}
           onImageUpload={handleImageUpload}
-          onRemoveImage={removeImage}
+          onPasteImages={handlePasteImages}
+          onRemoveImageAt={removeImageAt}
         />
 
         {showSettings && (

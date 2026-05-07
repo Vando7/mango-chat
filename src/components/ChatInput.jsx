@@ -1,7 +1,18 @@
 import { useRef, useEffect } from 'react'
 import { Paperclip, ArrowUp, Square, X } from 'lucide-react'
 
-export const ChatInput = ({ input, setInput, imageUrl, streaming, loading, onSend, onStop, onImageUpload, onRemoveImage }) => {
+export const ChatInput = ({
+  input,
+  setInput,
+  imageUrls,
+  streaming,
+  loading,
+  onSend,
+  onStop,
+  onImageUpload,
+  onPasteImages,
+  onRemoveImageAt,
+}) => {
   const fileInputRef = useRef(null)
   const textareaRef = useRef(null)
 
@@ -19,25 +30,42 @@ export const ChatInput = ({ input, setInput, imageUrl, streaming, loading, onSen
     }
   }
 
-  const canSend = !loading && (input.trim() || imageUrl)
+  const hasImages = imageUrls && imageUrls.length > 0
+  const canSend = !loading && (input.trim() || hasImages)
 
   return (
     <div className="border-t border-white/5 bg-mango-bg/80 px-4 py-3 backdrop-blur-md">
       <div className="mx-auto max-w-3xl">
-        {imageUrl && (
-          <div className="relative mb-2 inline-block">
-            <img src={imageUrl} alt="preview" className="max-h-32 rounded-lg border border-white/10" />
-            <button
-              onClick={onRemoveImage}
-              className="absolute -right-2 -top-2 flex h-6 w-6 items-center justify-center rounded-full bg-red-500 text-white shadow-md transition-all hover:scale-110 hover:bg-red-600"
-              aria-label="Remove image"
-            >
-              <X size={12} strokeWidth={2.25} />
-            </button>
+        {hasImages && (
+          <div className="mb-2 flex flex-wrap gap-2">
+            {imageUrls.map((url, i) => (
+              <div key={i} className="relative inline-block">
+                <img
+                  src={url}
+                  alt={`attachment ${i + 1}`}
+                  className="max-h-32 rounded-lg border border-white/10"
+                />
+                <button
+                  onClick={() => onRemoveImageAt(i)}
+                  className="absolute -right-2 -top-2 flex h-6 w-6 items-center justify-center rounded-full bg-red-500 text-white shadow-md transition-all hover:scale-110 hover:bg-red-600"
+                  aria-label={`Remove image ${i + 1}`}
+                  title="Remove"
+                >
+                  <X size={12} strokeWidth={2.25} />
+                </button>
+              </div>
+            ))}
           </div>
         )}
         <div className="composer flex items-end gap-1.5 rounded-2xl border border-white/10 bg-white/[0.03] p-1.5 transition-all focus-within:border-mango-400/40 focus-within:bg-white/[0.05] focus-within:ring-2 focus-within:ring-mango-400/15">
-          <input ref={fileInputRef} type="file" accept="image/*" onChange={onImageUpload} className="hidden" />
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept="image/*"
+            multiple
+            onChange={onImageUpload}
+            className="hidden"
+          />
           <button
             onClick={() => fileInputRef.current?.click()}
             className="icon-btn group flex-shrink-0"
@@ -55,6 +83,7 @@ export const ChatInput = ({ input, setInput, imageUrl, streaming, loading, onSen
             value={input}
             onChange={(e) => setInput(e.target.value)}
             onKeyDown={handleKeyDown}
+            onPaste={onPasteImages}
             placeholder="Send a message..."
             rows={1}
             className="flex-1 resize-none bg-transparent px-2 py-2 text-sm text-white placeholder-gray-500 focus:outline-none"

@@ -55,13 +55,14 @@ export const fetchModels = async () => {
 
 export async function* chat(history, selectedModel, signal) {
   const messages = history.map((msg) => {
-    if (msg.image) {
+    const images = Array.isArray(msg.images) ? msg.images : []
+    if (images.length > 0) {
       return {
         role: msg.role,
         content: [
           ...(msg.content ? [{ type: 'text', text: msg.content }] : []),
-          { type: 'image_url', image_url: { url: msg.image } },
-        ].filter(Boolean),
+          ...images.map((url) => ({ type: 'image_url', image_url: { url } })),
+        ],
       }
     }
     return { role: msg.role, content: msg.content }

@@ -96,7 +96,8 @@ const MessageActions = ({
   )
 }
 
-const MessageBubble = ({ role, content, reasoning, image, streaming }) => {
+const MessageBubble = ({ role, content, reasoning, images, streaming }) => {
+  const imageList = Array.isArray(images) ? images : []
   const reasoningRef = useRef(null)
   const reasoningContainerRef = useRef(null)
   const [reasoningVerb, setReasoningVerb] = useState(() =>
@@ -154,7 +155,18 @@ const MessageBubble = ({ role, content, reasoning, image, streaming }) => {
             : 'border border-white/5 bg-white/[0.03] text-gray-100 shadow-sm'
         }`}
       >
-        {image && <img src={image} alt="uploaded" className="mb-2 max-h-48 rounded-lg" />}
+        {imageList.length > 0 && (
+          <div className="mb-2 flex flex-wrap gap-2">
+            {imageList.map((url, i) => (
+              <img
+                key={i}
+                src={url}
+                alt={`attachment ${i + 1}`}
+                className="max-h-48 rounded-lg"
+              />
+            ))}
+          </div>
+        )}
         {reasoning && (
           <div className="mb-2">
             {streaming && (
@@ -263,6 +275,11 @@ export const MessageList = forwardRef(({
               key={`${msg.position}-${msg.version}`}
               className={`group mb-4 flex flex-col ${msg.role === 'user' ? 'items-end' : 'items-start'}`}
             >
+              {msg.role === 'assistant' && msg.model && (
+                <div className="mb-1 ml-10 truncate text-[11px] font-medium text-gray-500">
+                  {msg.model}
+                </div>
+              )}
               <MessageBubble {...msg} />
               <MessageActions
                 role={msg.role}
