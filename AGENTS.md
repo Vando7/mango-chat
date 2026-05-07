@@ -25,11 +25,14 @@
 
 ## Tech Stack
 
-- React 19 + Vite
-- Tailwind CSS 3 (with custom `mango` palette)
+- React 19 + Vite 8
+- Tailwind CSS 3 (with custom `mango` palette in `tailwind.config.js`)
 - [Lucide React](https://lucide.dev) for all UI icons — sleek modern stroke icons, tree-shakable
+- `react-markdown` + `remark-gfm` for assistant message rendering
+- `sql.js` (SQLite WASM) + IndexedDB for chat persistence
 - OpenAI-compatible LLM backend (default: LM Studio at `http://172.27.112.1:1234`; also works with Ollama, llama.cpp/lemonade, vLLM, etc.)
 - Vite dev proxy for CORS-free API calls
+- LM Studio's `/api/v1/models/{load,unload}` exists if model management is ever needed (currently unused — UI is read-only)
 
 ## Visual design
 
@@ -47,18 +50,20 @@
 
 ## State Management
 
-- All state lives in `App.jsx` — server URL, connection status, model list, messages, input, image URL, loading/error/streaming flags
-- Messages are `{ role, content, image?, streaming?, reasoning? }`
-- Streaming flag toggled on before the generator starts, off after completion or error
-- Error messages appear as red text in SettingsPanel
+- All state lives in `App.jsx` — server URL, connection status, model list (rich objects), `selectedModel` (string id), messages, input, image URL, loading/error/streaming flags, `showSettings` (default `true`), `settingsMinimized`, `sidebarOpen`, `chatRefreshKey`.
+- Messages are `{ role, content, image?, streaming?, reasoning? }`.
+- Streaming flag toggled on before the generator starts, off after completion or error.
+- Error messages appear as red text inside the floating `SettingsPanel`.
+- The `connected` state gates the auto-follow polling effect — set `true` after a successful `fetchModels`, reset on failure.
 
 ## Common Patterns
 
 - **Persistence**: `saveMessages(chatId, msgs)` deletes existing msgs then inserts fresh set — idempotent, no duplicates. Called in `finally` block of `handleSend` to cover normal completion, errors, and aborts.
 - **Streaming**: `for await (const chunk of chat(history, model))` — accumulates text and reasoning separately
 - **Image upload**: FileReader reads as data URL (`data:image/...;base64,...`), sent as `image_url` object in API
-- **API format flexibility**: `fetchModels()` handles both `{models:[]}` and `{data:[]}` response formats
-- **Reasoning content**: collected from `delta.reasoning_content`, stored separately, shown in collapsible `<details>` block
+- **Models endpoint flexibility**: `fetchModels()` tries LM Studio's `/api/v0/models` first for rich metadata, falls back to plain OpenAI `/v1/models`. Both `{models:[]}` and `{data:[]}` shapes are accepted. Always returns objects (`{id, ...}`), never bare strings.
+- **Reasoning content**: collected from `delta.reasoning_content`, accumulated separately from the main text. Shown live during streaming with the animated mexican-wave verb; collapses into a custom show/hide block (no `<details>`) once streaming ends.
+- **Auto-follow polling**: `App.jsx` runs a 5s interval while `connected`, paused on `document.hidden`, with an `inFlight` guard. It diffs the model list via `sameModelList(prev, next)` to avoid spurious re-renders, and switches `selectedModel` to whichever chat model is in `state: 'loaded'`.
 
 ## Testing
 
@@ -115,3 +120,9 @@ npm run test:api
 
 - **Vite dev server**: stdout only (startup info). To capture, run: `npm run dev > /tmp/vite-logs.log 2>&1 &`
 - **LM Studio**: log location depends on install. UI shows server logs in the Local Server tab. Lemonade logs (if used) live at `/run/user/1000/lemonade/lemonade-server.log`.
+
+## Git
+
+- Per-repo identity is `Vanko <ipmihaylov7@gmail.com>` (set in `.git/config`, **not** global). Don't `git config --global` — leave the user's other repos alone.
+- Remote is HTTPS (`https://github.com/Vando7/mango-chat.git`). Auth via `gh` CLI (`gh auth login`); credential storage configured by `gh`.
+- **Never `git push` without explicit user approval** (see Rules above).
