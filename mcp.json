@@ -1,16 +1,18 @@
 {
   "mcpServers": {
-    "date": {
-      "command": "mcp-servers/.venv/bin/python3",
+    "deep-dive": {
+      "command": "/home/pg-test/.local/bin/uv",
       "args": [
-        "mcp-servers/date_server.py"
-      ]
-    },
-    "sysinfo": {
-      "command": "mcp-servers/.venv/bin/python3",
-      "args": [
-        "mcp-servers/sysinfo_server.py"
-      ]
+        "run",
+        "--project",
+        "/home/pg-test/repos/mango-scrape/shim",
+        "python",
+        "/home/pg-test/repos/mango-scrape/shim/mcp_shim.py"
+      ],
+      "env": {
+        "PYTHONUNBUFFERED": "1",
+        "DEEP_DIVE_URL": "http://localhost:8765"
+      }
     }
   }
 }
