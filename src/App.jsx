@@ -1,18 +1,24 @@
-import { useState, useRef, useEffect, useCallback } from 'react'
+import { useState, useRef, useEffect, useCallback, useMemo } from 'react'
 import { PanelLeft, PanelLeftClose, Settings, Sparkles } from 'lucide-react'
 import { chat, fetchModels, setApiBase } from './api/client'
 import { MessageList } from './components/MessageList'
 import { ChatInput } from './components/ChatInput'
 import { SettingsPanel } from './components/SettingsPanel'
 import { Sidebar } from './components/Sidebar'
-import { initDatabase, saveChat, saveMessages, getMessages } from './api/db'
+import {
+  initDatabase,
+  saveChat,
+  appendMessage,
+  addNewVersion,
+  updateMessageVersion,
+  setActiveVersion,
+  deleteFromPosition,
+  getMessageVersions,
+} from './api/db'
 import './index.css'
 
 const DEFAULT_SERVER_URL = 'http://172.27.112.1:1234'
 
-// Always-available model option. Selected automatically when LM Studio reports
-// it loaded; otherwise still pickable so the request fails fast and tells the
-// user to load it in LM Studio.
 const HARDCODED_QWEN_MODEL = 'Qwen3.6-35B-A3B-GGUF-UD-Q2_K_XL'
 
 const HARDCODED_QWEN_ENTRY = {
@@ -31,9 +37,6 @@ const mergeWithHardcoded = (serverModels) => {
   return [HARDCODED_QWEN_ENTRY, ...serverModels]
 }
 
-// Mirrors LM Studio's loaded model: prefer whichever chat model is currently
-// loaded; otherwise fall back to any chat-capable model; otherwise the
-// hardcoded Qwen entry.
 const pickLoadedChatModel = (serverModels) =>
   serverModels.find((m) => m.state === 'loaded' && m.type !== 'embeddings')
 
@@ -50,12 +53,17 @@ const sameModelList = (a, b) =>
   a.length === b.length &&
   a.every((m, i) => m.id === b[i].id && m.state === b[i].state)
 
+// Empty conversation shape used by useState initializer and reset logic.
+const EMPTY_CONVO = { versions: [], active: [] }
+
 export default function App() {
   const [serverUrl, setServerUrl] = useState(DEFAULT_SERVER_URL)
   const [connected, setConnected] = useState(false)
   const [models, setModels] = useState([HARDCODED_QWEN_ENTRY])
   const [selectedModel, setSelectedModel] = useState(HARDCODED_QWEN_MODEL)
-  const [messages, setMessages] = useState([])
+  // versions[pos] = [{role,content,image,reasoning,streaming?}, ...]
+  // active[pos]   = currently-selected version index for that position
+  const [convo, setConvo] = useState(EMPTY_CONVO)
   const [input, setInput] = useState('')
   const [imageUrl, setImageUrl] = useState('')
   const [loading, setLoading] = useState(false)
@@ -71,9 +79,23 @@ export default function App() {
   const currentChatIdRef = useRef(null)
   const autoConnectedRef = useRef(false)
 
+  // Derive the displayed message list (active path) from convo.
+  const activeMessages = useMemo(
+    () => convo.versions.map((vs, p) => {
+      const v = vs[convo.active[p]]
+      return {
+        ...v,
+        position: p,
+        version: convo.active[p],
+        totalVersions: vs.length,
+      }
+    }),
+    [convo]
+  )
+
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
-  }, [messages])
+  }, [activeMessages])
 
   const handleConnect = async () => {
     setLoading(true)
@@ -94,8 +116,6 @@ export default function App() {
     }
   }
 
-  // Auto-connect on page load. Ref guard suppresses StrictMode's double mount
-  // in dev so we don't fire two simultaneous /v1/models requests.
   useEffect(() => {
     if (autoConnectedRef.current) return
     autoConnectedRef.current = true
@@ -103,8 +123,6 @@ export default function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
-  // Mirror LM Studio loaded state: poll /api/v0/models while connected and
-  // visible. Auto-switches selection to whatever chat model is loaded.
   useEffect(() => {
     if (!connected) return
     let cancelled = false
@@ -140,27 +158,16 @@ export default function App() {
     }
   }, [connected])
 
-  const persistMessages = async (chatId, msgs) => {
-    try {
-      await initDatabase()
-      saveMessages(chatId, msgs)
-    } catch (e) {
-      console.error('Failed to persist messages:', e)
-    }
-  }
-
   const handleLoadChat = async (chatId) => {
     try {
       await initDatabase()
-      const dbMessages = getMessages(chatId)
+      const { versions, active } = getMessageVersions(chatId)
       currentChatIdRef.current = chatId
-      setMessages(dbMessages.map((m) => ({
-        role: m.role,
-        content: m.content,
-        image: m.image,
-        reasoning: m.reasoning,
-        streaming: false,
-      })))
+      // Strip any lingering streaming flag from rehydrated rows.
+      const cleanVersions = versions.map((vs) =>
+        vs.map((v) => ({ ...v, streaming: false }))
+      )
+      setConvo({ versions: cleanVersions, active })
       setInput('')
       setImageUrl('')
     } catch (e) {
@@ -170,90 +177,220 @@ export default function App() {
 
   const handleNewChat = useCallback(() => {
     currentChatIdRef.current = null
-    setMessages([])
+    setConvo(EMPTY_CONVO)
     setInput('')
     setImageUrl('')
   }, [])
 
-  const handleSend = async () => {
-    if (!selectedModel || (!input.trim() && !imageUrl)) return
-
-    const userMsg = { role: 'user', content: input.trim(), image: imageUrl || null }
-    const newHistory = [...messages, userMsg]
-    setMessages(newHistory)
-    setInput('')
-    setImageUrl('')
-    setLoading(true)
-
-    // Create chat ID if new
-    if (!currentChatIdRef.current) {
-      currentChatIdRef.current = 'chat-' + Date.now() + '-' + Math.random().toString(36).slice(2, 8)
-      saveChat(currentChatIdRef.current, input.trim().slice(0, 60))
-      setChatRefreshKey((prev) => prev + 1)
-    }
-
-    setMessages((prev) => [...prev, { role: 'assistant', content: '', streaming: true }])
-    setStreaming(true)
-
+  const runStream = async (history, chatId, position, version) => {
     abortControllerRef.current = new AbortController()
     const signal = abortControllerRef.current.signal
+    setStreaming(true)
+    setLoading(true)
+
+    let lastText = ''
+    let lastReasoning = ''
 
     try {
-      const stream = chat(newHistory, selectedModel, signal)
-
+      const stream = chat(history, selectedModel, signal)
       for await (const chunk of stream) {
-        setMessages((prev) => {
-          const updated = [...prev]
-          const last = updated[updated.length - 1]
-          if (last?.role === 'assistant') {
-            updated[updated.length - 1] = { ...last, content: chunk.text, reasoning: chunk.reasoning }
-          }
-          return updated
+        lastText = chunk.text
+        lastReasoning = chunk.reasoning
+        setConvo((c) => {
+          const versions = c.versions.map((vs, p) => {
+            if (p !== position) return vs
+            const next = vs.slice()
+            next[version] = { ...next[version], content: chunk.text, reasoning: chunk.reasoning }
+            return next
+          })
+          return { ...c, versions }
         })
       }
-
-      setMessages((prev) => {
-        const updated = [...prev]
-        const last = updated[updated.length - 1]
-        if (last?.role === 'assistant') {
-          updated[updated.length - 1] = { ...last, streaming: false }
-        }
-        return updated
+      setConvo((c) => {
+        const versions = c.versions.map((vs, p) => {
+          if (p !== position) return vs
+          const next = vs.slice()
+          next[version] = { ...next[version], streaming: false }
+          return next
+        })
+        return { ...c, versions }
       })
     } catch (err) {
       setError(err.message)
-      setMessages((prev) => {
-        const updated = [...prev]
-        const last = updated[updated.length - 1]
-        if (last?.streaming) {
-          updated[updated.length - 1] = { ...last, content: '⚠ ' + err.message, streaming: false }
-        }
-        return updated
+      setConvo((c) => {
+        const versions = c.versions.map((vs, p) => {
+          if (p !== position) return vs
+          const next = vs.slice()
+          const cur = next[version]
+          if (cur?.streaming) {
+            next[version] = {
+              ...cur,
+              content: cur.content || ('⚠ ' + err.message),
+              streaming: false,
+            }
+            lastText = next[version].content
+          }
+          return next
+        })
+        return { ...c, versions }
       })
     } finally {
       setLoading(false)
       setStreaming(false)
-      // Capture the latest messages via an updater so we don't race with
-      // pending setMessages calls (covers normal completion, error, abort).
-      setMessages((current) => {
-        persistMessages(currentChatIdRef.current, current)
-        return current
-      })
+      try {
+        await initDatabase()
+        updateMessageVersion(chatId, position, version, lastText, lastReasoning)
+      } catch (e) {
+        console.error('Failed to persist message version:', e)
+      }
       setChatRefreshKey((prev) => prev + 1)
     }
   }
 
+  const handleSend = async () => {
+    if (!selectedModel || (!input.trim() && !imageUrl)) return
+    if (streaming) return
+
+    const userContent = input.trim()
+    const userImage = imageUrl || null
+    const userMsg = { role: 'user', content: userContent, image: userImage, reasoning: null }
+    const assistantMsg = { role: 'assistant', content: '', image: null, reasoning: null, streaming: true }
+
+    // Create chat row if this is the first message.
+    let chatId = currentChatIdRef.current
+    const isNewChat = !chatId
+    if (isNewChat) {
+      chatId = 'chat-' + Date.now() + '-' + Math.random().toString(36).slice(2, 8)
+      currentChatIdRef.current = chatId
+    }
+
+    let assistantPos
+    try {
+      await initDatabase()
+      if (isNewChat) {
+        saveChat(chatId, userContent.slice(0, 60) || 'New chat')
+      }
+      appendMessage(chatId, 'user', userContent, userImage, null)
+      ;({ position: assistantPos } = appendMessage(chatId, 'assistant', '', null, null))
+    } catch (e) {
+      console.error('Failed to persist initial messages:', e)
+      setError('Failed to save message: ' + e.message)
+      return
+    }
+
+    // Build history to send: existing active path + the user msg we just
+    // appended. The empty/streaming assistant slot is not included.
+    const historyToSend = [
+      ...convo.versions.map((vs, p) => {
+        const v = vs[convo.active[p]]
+        return { role: v.role, content: v.content, image: v.image }
+      }),
+      { role: userMsg.role, content: userMsg.content, image: userMsg.image },
+    ]
+
+    setConvo((c) => ({
+      versions: [...c.versions, [userMsg], [assistantMsg]],
+      active: [...c.active, 0, 0],
+    }))
+    setInput('')
+    setImageUrl('')
+    setChatRefreshKey((prev) => prev + 1)
+
+    await runStream(historyToSend, chatId, assistantPos, 0)
+  }
+
   const handleStop = () => {
     abortControllerRef.current?.abort()
-    setMessages((prev) => {
-      const updated = [...prev]
-      const last = updated[updated.length - 1]
-      if (last?.role === 'assistant' && last?.streaming) {
-        updated[updated.length - 1] = { ...last, streaming: false }
-      }
-      return updated
+    setConvo((c) => {
+      const versions = c.versions.map((vs) => {
+        const idx = vs.findIndex((v) => v?.streaming)
+        if (idx === -1) return vs
+        const next = vs.slice()
+        next[idx] = { ...next[idx], streaming: false }
+        return next
+      })
+      return { ...c, versions }
     })
     setStreaming(false)
+  }
+
+  const handleRegenerate = async (position) => {
+    if (streaming) return
+    const chatId = currentChatIdRef.current
+    if (!chatId) return
+    // Only the latest position should be regenerable, and only if it's an
+    // assistant slot. Guard here defensively.
+    if (position !== convo.versions.length - 1) return
+    const slot = convo.versions[position]
+    if (!slot || slot[0]?.role !== 'assistant') return
+
+    let newVersionIdx
+    try {
+      await initDatabase()
+      ;({ version: newVersionIdx } = addNewVersion(chatId, position, 'assistant', '', null, null))
+    } catch (e) {
+      console.error('Failed to add new version:', e)
+      setError('Failed to regenerate: ' + e.message)
+      return
+    }
+
+    const newAssistant = { role: 'assistant', content: '', image: null, reasoning: null, streaming: true }
+    setConvo((c) => {
+      const versions = c.versions.map((vs, p) => {
+        if (p !== position) return vs
+        const next = vs.slice()
+        next[newVersionIdx] = newAssistant
+        return next
+      })
+      const active = c.active.slice()
+      active[position] = newVersionIdx
+      return { versions, active }
+    })
+
+    // History: active path up to (but not including) this position.
+    const historyToSend = []
+    for (let p = 0; p < position; p++) {
+      const v = convo.versions[p][convo.active[p]]
+      historyToSend.push({ role: v.role, content: v.content, image: v.image })
+    }
+
+    await runStream(historyToSend, chatId, position, newVersionIdx)
+  }
+
+  const handleSwitchVersion = async (position, newVersionIdx) => {
+    if (streaming) return
+    const slot = convo.versions[position]
+    if (!slot || newVersionIdx < 0 || newVersionIdx >= slot.length) return
+    setConvo((c) => {
+      const active = c.active.slice()
+      active[position] = newVersionIdx
+      return { ...c, active }
+    })
+    const chatId = currentChatIdRef.current
+    if (!chatId) return
+    try {
+      await initDatabase()
+      setActiveVersion(chatId, position, newVersionIdx)
+    } catch (e) {
+      console.error('Failed to switch version:', e)
+    }
+  }
+
+  const handleDeleteMessage = async (position) => {
+    if (streaming) return
+    setConvo((c) => ({
+      versions: c.versions.slice(0, position),
+      active: c.active.slice(0, position),
+    }))
+    const chatId = currentChatIdRef.current
+    if (!chatId) return
+    try {
+      await initDatabase()
+      deleteFromPosition(chatId, position)
+    } catch (e) {
+      console.error('Failed to delete message:', e)
+    }
+    setChatRefreshKey((prev) => prev + 1)
   }
 
   const handleImageUpload = (e) => {
@@ -323,7 +460,14 @@ export default function App() {
           </button>
         </header>
 
-        <MessageList ref={messagesEndRef} messages={messages} />
+        <MessageList
+          ref={messagesEndRef}
+          messages={activeMessages}
+          streaming={streaming}
+          onRegenerate={handleRegenerate}
+          onSwitchVersion={handleSwitchVersion}
+          onDeleteMessage={handleDeleteMessage}
+        />
 
         <ChatInput
           input={input}

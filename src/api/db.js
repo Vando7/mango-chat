@@ -5,7 +5,11 @@ let initPromise = null
 const DB_NAME = 'chat-app-db'
 const DB_FILE = 'chat-app-db.sqlite'
 
-// Import the WASM file as a blob URL for sql.js
+// Bump this whenever the schema changes. On init we read PRAGMA user_version
+// from the persisted db; if it's lower than SCHEMA_VERSION, every table is
+// dropped and recreated. We don't migrate — chat history is disposable.
+const SCHEMA_VERSION = 2
+
 let wasmBlobUrl = null
 
 async function doInit() {
@@ -31,6 +35,14 @@ async function doInit() {
   const dbBuffer = await loadFromIndexedDB(DB_FILE)
   db = dbBuffer ? new SQL.Database(dbBuffer) : new SQL.Database()
 
+  const versionRows = db.exec('PRAGMA user_version')
+  const currentVersion = versionRows[0]?.values?.[0]?.[0] ?? 0
+  if (currentVersion < SCHEMA_VERSION) {
+    db.run('DROP TABLE IF EXISTS messages')
+    db.run('DROP TABLE IF EXISTS chats')
+    db.run(`PRAGMA user_version = ${SCHEMA_VERSION}`)
+  }
+
   db.run(`
     CREATE TABLE IF NOT EXISTS chats (
       id TEXT PRIMARY KEY,
@@ -43,24 +55,29 @@ async function doInit() {
     CREATE TABLE IF NOT EXISTS messages (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       chat_id TEXT NOT NULL,
+      position INTEGER NOT NULL,
+      version INTEGER NOT NULL,
       role TEXT NOT NULL,
       content TEXT NOT NULL,
       image TEXT,
       reasoning TEXT,
+      is_active INTEGER NOT NULL DEFAULT 0,
       created_at INTEGER NOT NULL,
+      UNIQUE (chat_id, position, version),
       FOREIGN KEY (chat_id) REFERENCES chats(id)
     )
   `)
+  db.run('CREATE INDEX IF NOT EXISTS idx_messages_chat_pos ON messages(chat_id, position)')
+
+  if (currentVersion < SCHEMA_VERSION) persist()
 
   return db
 }
 
-// Cache the in-flight promise so concurrent callers (Sidebar + App on mount)
-// share one initialization instead of racing the WASM fetch and DB open.
 function initDatabase() {
   if (!initPromise) {
     initPromise = doInit().catch((e) => {
-      initPromise = null  // allow retry after failure
+      initPromise = null
       throw e
     })
   }
@@ -88,9 +105,6 @@ function loadFromIndexedDB(key) {
   return new Promise((resolve, reject) => {
     const request = indexedDB.open(DB_NAME, 1)
     request.onerror = () => reject(request.error)
-    // First-run path: the IDB doesn't exist yet. Create the object store here
-    // too (not just in saveToIndexedDB) so the readonly transaction below
-    // doesn't blow up with NotFoundError on a clean profile.
     request.onupgradeneeded = () => {
       request.result.createObjectStore('store')
     }
@@ -132,20 +146,37 @@ export function getChats() {
   }))
 }
 
-export function getMessages(chatId) {
+// Returns { versions, active } where:
+//   versions[position] is an array of { role, content, image, reasoning, version, created_at }
+//   active[position]   is the version index currently marked is_active=1
+export function getMessageVersions(chatId) {
   const rows = db.exec(
-    'SELECT id, role, content, image, reasoning, created_at FROM messages WHERE chat_id = ? ORDER BY id ASC',
+    `SELECT position, version, role, content, image, reasoning, is_active, created_at
+     FROM messages WHERE chat_id = ? ORDER BY position ASC, version ASC`,
     [chatId]
   )
-  if (rows.length === 0) return []
-  return rows[0].values.map((row) => ({
-    id: row[0],
-    role: row[1],
-    content: row[2],
-    image: row[3] || null,
-    reasoning: row[4] || null,
-    created_at: row[5],
-  }))
+  const versions = []
+  const active = []
+  if (rows.length === 0) return { versions, active }
+  for (const row of rows[0].values) {
+    const [position, version, role, content, image, reasoning, isActive, createdAt] = row
+    if (!versions[position]) versions[position] = []
+    versions[position][version] = {
+      role,
+      content,
+      image: image || null,
+      reasoning: reasoning || null,
+      version,
+      created_at: createdAt,
+    }
+    if (isActive) active[position] = version
+  }
+  for (let p = 0; p < versions.length; p++) {
+    if (versions[p] && active[p] === undefined) {
+      active[p] = versions[p].length - 1
+    }
+  }
+  return { versions, active }
 }
 
 export function saveChat(id, title) {
@@ -157,33 +188,72 @@ export function saveChat(id, title) {
   persist()
 }
 
-export function saveMessage(chatId, role, content, image, reasoning) {
+// Append a brand new message at the next position (version 0, active).
+// Returns { position, version }.
+export function appendMessage(chatId, role, content, image, reasoning) {
+  const rows = db.exec('SELECT MAX(position) FROM messages WHERE chat_id = ?', [chatId])
+  const maxPos = rows[0]?.values?.[0]?.[0]
+  const position = (maxPos === null || maxPos === undefined) ? 0 : maxPos + 1
+  const now = Date.now()
   db.run(
-    'INSERT INTO messages (chat_id, role, content, image, reasoning, created_at) VALUES (?, ?, ?, ?, ?, ?)',
-    [chatId, role, content, image || null, reasoning || null, Date.now()]
+    `INSERT INTO messages (chat_id, position, version, role, content, image, reasoning, is_active, created_at)
+     VALUES (?, ?, 0, ?, ?, ?, ?, 1, ?)`,
+    [chatId, position, role, content || '', image || null, reasoning || null, now]
   )
-  // Also update the chat's updated_at
+  db.run('UPDATE chats SET updated_at = ? WHERE id = ?', [now, chatId])
+  persist()
+  return { position, version: 0 }
+}
+
+// Add a new version at an existing position; mark it active and deactivate
+// any prior versions at that position. Returns the new version index.
+export function addNewVersion(chatId, position, role, content, image, reasoning) {
+  const rows = db.exec(
+    'SELECT MAX(version) FROM messages WHERE chat_id = ? AND position = ?',
+    [chatId, position]
+  )
+  const maxV = rows[0]?.values?.[0]?.[0]
+  const version = (maxV === null || maxV === undefined) ? 0 : maxV + 1
+  const now = Date.now()
+  db.run('UPDATE messages SET is_active = 0 WHERE chat_id = ? AND position = ?', [chatId, position])
+  db.run(
+    `INSERT INTO messages (chat_id, position, version, role, content, image, reasoning, is_active, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?)`,
+    [chatId, position, version, role, content || '', image || null, reasoning || null, now]
+  )
+  db.run('UPDATE chats SET updated_at = ? WHERE id = ?', [now, chatId])
+  persist()
+  return { position, version }
+}
+
+// Update content + reasoning on an existing version (used when streaming
+// finishes — we don't persist on every chunk).
+export function updateMessageVersion(chatId, position, version, content, reasoning) {
+  db.run(
+    'UPDATE messages SET content = ?, reasoning = ? WHERE chat_id = ? AND position = ? AND version = ?',
+    [content || '', reasoning || null, chatId, position, version]
+  )
   db.run('UPDATE chats SET updated_at = ? WHERE id = ?', [Date.now(), chatId])
   persist()
 }
 
-export function saveMessages(chatId, messages) {
-  const now = Date.now()
-  db.run('BEGIN TRANSACTION')
-  try {
-    db.run('DELETE FROM messages WHERE chat_id = ?', [chatId])
-    for (const msg of messages) {
-      db.run(
-        'INSERT INTO messages (chat_id, role, content, image, reasoning, created_at) VALUES (?, ?, ?, ?, ?, ?)',
-        [chatId, msg.role, msg.content || '', msg.image || null, msg.reasoning || null, now]
-      )
-    }
-    db.run('UPDATE chats SET updated_at = ? WHERE id = ?', [now, chatId])
-    db.run('COMMIT')
-  } catch (e) {
-    db.run('ROLLBACK')
-    throw e
-  }
+// Flip is_active to a different version at the given position.
+export function setActiveVersion(chatId, position, version) {
+  db.run('UPDATE messages SET is_active = 0 WHERE chat_id = ? AND position = ?', [chatId, position])
+  db.run(
+    'UPDATE messages SET is_active = 1 WHERE chat_id = ? AND position = ? AND version = ?',
+    [chatId, position, version]
+  )
+  db.run('UPDATE chats SET updated_at = ? WHERE id = ?', [Date.now(), chatId])
+  persist()
+}
+
+// Delete every message at the given position and beyond. Used by the
+// per-message delete button — the tail is always discarded because it was
+// generated as a continuation of the deleted message.
+export function deleteFromPosition(chatId, position) {
+  db.run('DELETE FROM messages WHERE chat_id = ? AND position >= ?', [chatId, position])
+  db.run('UPDATE chats SET updated_at = ? WHERE id = ?', [Date.now(), chatId])
   persist()
 }
 

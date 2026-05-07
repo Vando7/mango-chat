@@ -1,7 +1,14 @@
 import { forwardRef, useEffect, useRef, useState } from 'react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
-import { ChevronRight, MessagesSquare, Sparkles } from 'lucide-react'
+import {
+  ChevronLeft,
+  ChevronRight,
+  MessagesSquare,
+  RefreshCw,
+  Sparkles,
+  Trash2,
+} from 'lucide-react'
 
 const REASONING_VERBS = [
   'Thinking',
@@ -18,6 +25,77 @@ const REASONING_VERBS = [
   'Connecting dots',
 ]
 
+const MessageActions = ({
+  role,
+  position,
+  version,
+  totalVersions,
+  isLatestAssistant,
+  streaming,
+  onRegenerate,
+  onSwitchVersion,
+  onDeleteMessage,
+}) => {
+  const hasArrows = totalVersions > 1
+  const showRegen = role === 'assistant' && isLatestAssistant
+  if (!hasArrows && !showRegen && streaming) return null
+
+  return (
+    <div
+      className={`mt-1.5 flex items-center gap-1.5 text-xs text-gray-500 opacity-0 transition-opacity duration-150 group-hover:opacity-100 ${
+        role === 'user' ? 'justify-end' : 'justify-start'
+      }`}
+    >
+      {hasArrows && (
+        <div className="inline-flex items-center gap-0.5 rounded-md border border-white/5 bg-white/[0.02]">
+          <button
+            onClick={() => onSwitchVersion(position, version - 1)}
+            disabled={version === 0 || streaming}
+            className="flex h-6 w-6 items-center justify-center rounded-l-md transition-colors hover:bg-white/[0.06] disabled:opacity-30 disabled:hover:bg-transparent"
+            title="Previous version"
+            aria-label="Previous version"
+          >
+            <ChevronLeft size={12} strokeWidth={2} />
+          </button>
+          <span className="px-1 tabular-nums text-[11px] text-gray-400">
+            {version + 1}/{totalVersions}
+          </span>
+          <button
+            onClick={() => onSwitchVersion(position, version + 1)}
+            disabled={version === totalVersions - 1 || streaming}
+            className="flex h-6 w-6 items-center justify-center rounded-r-md transition-colors hover:bg-white/[0.06] disabled:opacity-30 disabled:hover:bg-transparent"
+            title="Next version"
+            aria-label="Next version"
+          >
+            <ChevronRight size={12} strokeWidth={2} />
+          </button>
+        </div>
+      )}
+      {showRegen && (
+        <button
+          onClick={() => onRegenerate(position)}
+          disabled={streaming}
+          className="flex h-6 items-center gap-1 rounded-md border border-white/5 bg-white/[0.02] px-2 transition-colors hover:bg-white/[0.06] hover:text-mango-300 disabled:opacity-30 disabled:hover:bg-transparent"
+          title="Regenerate response"
+          aria-label="Regenerate response"
+        >
+          <RefreshCw size={11} strokeWidth={2} />
+          <span className="text-[11px]">Regenerate</span>
+        </button>
+      )}
+      <button
+        onClick={() => onDeleteMessage(position)}
+        disabled={streaming}
+        className="flex h-6 w-6 items-center justify-center rounded-md border border-white/5 bg-white/[0.02] transition-colors hover:bg-red-500/15 hover:text-red-400 disabled:opacity-30 disabled:hover:bg-transparent"
+        title="Delete message and everything after"
+        aria-label="Delete message"
+      >
+        <Trash2 size={11} strokeWidth={2} />
+      </button>
+    </div>
+  )
+}
+
 const MessageBubble = ({ role, content, reasoning, image, streaming }) => {
   const reasoningRef = useRef(null)
   const reasoningContainerRef = useRef(null)
@@ -32,7 +110,6 @@ const MessageBubble = ({ role, content, reasoning, image, streaming }) => {
 
   const toggleReasoning = () => {
     if (!reasoningExpanded) {
-      // Expanding: measure content height
       setReasoningExpanded(true)
       setTimeout(() => {
         if (reasoningContentRef.current) {
@@ -40,7 +117,6 @@ const MessageBubble = ({ role, content, reasoning, image, streaming }) => {
         }
       }, 10)
     } else {
-      // Collapsing: reset height
       setReasoningHeight(0)
       setReasoningExpanded(false)
     }
@@ -52,7 +128,6 @@ const MessageBubble = ({ role, content, reasoning, image, streaming }) => {
     }
   }, [reasoning])
 
-  // Start verb cycling once reasoning appears (runs once)
   useEffect(() => {
     if (startedRef.current) return
     startedRef.current = true
@@ -158,26 +233,53 @@ const MessageBubble = ({ role, content, reasoning, image, streaming }) => {
   )
 }
 
-export const MessageList = forwardRef(({ messages }, ref) => (
-  <div className="flex-1 overflow-y-auto message-scroll">
-    {messages.length === 0 && (
-      <div className="flex h-full flex-col items-center justify-center gap-5 text-gray-500">
-        <div className="empty-glow flex h-20 w-20 items-center justify-center rounded-2xl">
-          <MessagesSquare size={36} strokeWidth={1.5} className="text-mango-300" />
+export const MessageList = forwardRef(({
+  messages,
+  streaming,
+  onRegenerate,
+  onSwitchVersion,
+  onDeleteMessage,
+}, ref) => {
+  const lastIdx = messages.length - 1
+  return (
+    <div className="flex-1 overflow-y-auto message-scroll">
+      {messages.length === 0 && (
+        <div className="flex h-full flex-col items-center justify-center gap-5 text-gray-500">
+          <div className="empty-glow flex h-20 w-20 items-center justify-center rounded-2xl">
+            <MessagesSquare size={36} strokeWidth={1.5} className="text-mango-300" />
+          </div>
+          <div className="text-center">
+            <p className="text-base font-medium text-gray-300">Start a new conversation</p>
+            <p className="mt-1 text-sm text-gray-500">Ask anything — your local model is ready.</p>
+          </div>
         </div>
-        <div className="text-center">
-          <p className="text-base font-medium text-gray-300">Start a new conversation</p>
-          <p className="mt-1 text-sm text-gray-500">Ask anything — your local model is ready.</p>
-        </div>
+      )}
+      <div className="mx-auto max-w-3xl px-4 py-6">
+        {messages.map((msg, i) => {
+          const isLatestAssistant =
+            msg.role === 'assistant' && i === lastIdx && !msg.streaming
+          return (
+            <div
+              key={`${msg.position}-${msg.version}`}
+              className={`group mb-4 flex flex-col ${msg.role === 'user' ? 'items-end' : 'items-start'}`}
+            >
+              <MessageBubble {...msg} />
+              <MessageActions
+                role={msg.role}
+                position={msg.position}
+                version={msg.version}
+                totalVersions={msg.totalVersions}
+                isLatestAssistant={isLatestAssistant}
+                streaming={streaming}
+                onRegenerate={onRegenerate}
+                onSwitchVersion={onSwitchVersion}
+                onDeleteMessage={onDeleteMessage}
+              />
+            </div>
+          )
+        })}
+        <div ref={ref} />
       </div>
-    )}
-    <div className="mx-auto max-w-3xl px-4 py-6">
-      {messages.map((msg, i) => (
-        <div key={i} className={`mb-4 flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
-          <MessageBubble {...msg} />
-        </div>
-      ))}
-      <div ref={ref} />
     </div>
-  </div>
-))
+  )
+})
