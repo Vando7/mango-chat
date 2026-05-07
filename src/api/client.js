@@ -144,6 +144,72 @@ const parseNemotronToolBlock = (block, idx) => {
   }
 }
 
+// Render an OpenAI function-tool array as a system-prompt addendum that
+// instructs the model to emit tool calls in the `<tool_call><function=…>`
+// XML dialect that `extractNemotronMarkup` understands. Used as a fallback
+// for backends that don't pass the `tools` request field through to the
+// model (e.g. AMD Lemonade as of 2026-05) — the request-body tools array
+// gets dropped by the proxy, so the only way to get the model to emit a
+// tool call is to describe the catalog inside the system prompt and rely
+// on the inline-XML parser to lift the markup out of `delta.content`.
+//
+// Output is a plain-text block; the caller is responsible for prepending
+// it to the system message of `historyToSend`.
+export const buildToolCatalogPrompt = (tools) => {
+  const fmtType = (schema) => {
+    if (!schema) return 'any'
+    const base = schema.type || 'any'
+    if (base === 'array' && schema.items?.type) return `array<${schema.items.type}>`
+    return base
+  }
+
+  const lines = [
+    'You have access to the following tools. To call a tool, emit ONLY this',
+    'XML markup directly in your reply (no code fences, no surrounding text):',
+    '',
+    '<tool_call>',
+    '<function=TOOL_NAME>',
+    '<parameter=ARG_NAME>VALUE</parameter>',
+    '</function>',
+    '</tool_call>',
+    '',
+    'Stop generating immediately after the closing </tool_call>; the host will',
+    'execute the tool and give you the result on the next turn. VALUE is parsed',
+    'as JSON when possible, else taken verbatim — for arrays, objects, numbers',
+    'and booleans emit raw JSON (e.g. <parameter=urls>["https://x"]</parameter>).',
+    'Do not invent tools that are not listed below.',
+    '',
+    'Available tools:',
+    '',
+  ]
+
+  for (const t of tools) {
+    const fn = t.function
+    if (!fn?.name) continue
+    const oneLine = (fn.description || '').split('\n')[0].trim()
+    lines.push(`- ${fn.name}${oneLine ? ` — ${oneLine}` : ''}`)
+    const props = fn.parameters?.properties || {}
+    const required = new Set(fn.parameters?.required || [])
+    const keys = Object.keys(props)
+    if (keys.length === 0) {
+      lines.push('  (no arguments)')
+      continue
+    }
+    for (const k of keys) {
+      const schema = props[k]
+      const tag = required.has(k)
+        ? 'required'
+        : schema?.default !== undefined
+          ? `default ${JSON.stringify(schema.default)}`
+          : 'optional'
+      const desc = schema?.description ? ` — ${schema.description.split('\n')[0].trim()}` : ''
+      lines.push(`  - ${k} (${fmtType(schema)}, ${tag})${desc}`)
+    }
+  }
+
+  return lines.join('\n')
+}
+
 // Returns { visible, reasoning, toolCalls } extracted from raw streamed text.
 // `toolCalls` matches the same shape we accumulate from OpenAI's native
 // `delta.tool_calls[]` so callers can treat both paths identically.

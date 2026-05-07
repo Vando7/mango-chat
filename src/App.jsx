@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect, useCallback, useMemo } from 'react'
 import { PanelLeft, PanelLeftClose, Settings, Sparkles } from 'lucide-react'
-import { chat, fetchModels, setApiBase } from './api/client'
+import { chat, fetchModels, setApiBase, buildToolCatalogPrompt } from './api/client'
 import { fetchMcpTools, callMcpTool } from './api/mcp'
 import { MessageList } from './components/MessageList'
 import { ChatInput } from './components/ChatInput'
@@ -46,6 +46,7 @@ const sameModelList = (a, b) =>
 const EMPTY_CONVO = { versions: [], active: [] }
 
 const ACTIVE_PRESET_KEY = 'mango.activePresetId'
+const FORCED_TOOLS_KEY = 'mango.forcedToolModels'
 
 // Hard cap on tool-use rounds within a single send to prevent runaway loops.
 const MAX_TOOL_TURNS = 8
@@ -53,6 +54,31 @@ const MAX_TOOL_TURNS = 8
 const modelSupportsTools = (modelId, models) => {
   const m = models.find((x) => x.id === modelId)
   return Array.isArray(m?.capabilities) && m.capabilities.includes('tool_use')
+}
+
+// Tools are sent (and tool-call XML is parsed back out of `delta.content`)
+// when *either* the model advertises native tool_use *or* the user has
+// explicitly opted in to prompt-injected tools for this model.
+const toolsActiveFor = (modelId, models, forcedToolModels) =>
+  modelSupportsTools(modelId, models) || forcedToolModels.has(modelId)
+
+// Prepend the tool catalog as system content. If the history already has a
+// system message (e.g. an active preset), the catalog goes *before* that
+// preset's content within the same message — some chat templates only render
+// the first system message, so two separate ones isn't safe.
+const augmentHistoryWithToolCatalog = (history, tools) => {
+  const catalog = buildToolCatalogPrompt(tools)
+  const out = history.slice()
+  const sysIdx = out.findIndex((m) => m.role === 'system')
+  if (sysIdx >= 0) {
+    out[sysIdx] = {
+      ...out[sysIdx],
+      content: catalog + '\n\n' + (out[sysIdx].content || ''),
+    }
+  } else {
+    out.unshift({ role: 'system', content: catalog, images: [] })
+  }
+  return out
 }
 
 export default function App() {
@@ -78,6 +104,16 @@ export default function App() {
   const [activePresetId, setActivePresetIdState] = useState(() => {
     try { return localStorage.getItem(ACTIVE_PRESET_KEY) || null } catch { return null }
   })
+  // Set of model ids the user has opted in to prompt-injected tool calling.
+  // Used when the backend doesn't pass the OpenAI `tools` request field
+  // through to the model (e.g. Lemonade) — we then describe the catalog in
+  // the system prompt and rely on the inline-XML parser in client.js.
+  const [forcedToolModels, setForcedToolModels] = useState(() => {
+    try {
+      const raw = localStorage.getItem(FORCED_TOOLS_KEY)
+      return new Set(raw ? JSON.parse(raw) : [])
+    } catch { return new Set() }
+  })
 
   const setActivePresetId = useCallback((id) => {
     setActivePresetIdState(id)
@@ -88,6 +124,16 @@ export default function App() {
       // localStorage may be unavailable (private mode); selection is still
       // honored in-memory for the session.
     }
+  }, [])
+
+  const toggleForcedTools = useCallback((modelId) => {
+    setForcedToolModels((prev) => {
+      const next = new Set(prev)
+      if (next.has(modelId)) next.delete(modelId)
+      else next.add(modelId)
+      try { localStorage.setItem(FORCED_TOOLS_KEY, JSON.stringify([...next])) } catch { /* ignore */ }
+      return next
+    })
   }, [])
 
   const activePreset = useMemo(
@@ -313,16 +359,21 @@ export default function App() {
     setStreaming(true)
     setLoading(true)
 
-    // Per-send tools: only attach if the active model advertises tool_use,
-    // and only if we actually have any MCP tools registered.
-    const toolsForRequest =
-      mcpTools.length > 0 && modelSupportsTools(selectedModel, models) ? mcpTools : undefined
+    // Per-send tools: attach when the model advertises native tool_use OR
+    // the user has forced prompt-injected tools for this model. When forced,
+    // we *also* prepend a tool catalog to the system message so the model
+    // sees the catalog inline (in case the backend swallows the tools field).
+    const isForced = forcedToolModels.has(selectedModel)
+    const wantTools = mcpTools.length > 0 && (modelSupportsTools(selectedModel, models) || isForced)
+    const toolsForRequest = wantTools ? mcpTools : undefined
 
     // Cumulative state across multi-turn tool exchanges.
     let accumulatedText = ''
     let accumulatedReasoning = ''
     const executedToolCalls = [] // chronological, persisted on the assistant version
-    const workingHistory = history.slice()
+    const workingHistory = (wantTools && isForced)
+      ? augmentHistoryWithToolCatalog(history, mcpTools)
+      : history.slice()
 
     const joinText = (a, b) => (a && b ? a + '\n\n' + b : a || b || '')
 
@@ -765,7 +816,9 @@ export default function App() {
             onDeletePreset={handleDeletePreset}
             mcpServers={mcpServers}
             mcpTools={mcpTools}
-            mcpEnabledForModel={modelSupportsTools(selectedModel, models)}
+            mcpEnabledForModel={toolsActiveFor(selectedModel, models, forcedToolModels)}
+            forcedToolModels={forcedToolModels}
+            onToggleForcedTools={toggleForcedTools}
             onMcpConfigSaved={handleMcpConfigSaved}
             minimized={settingsMinimized}
             onMinimize={() => setSettingsMinimized(!settingsMinimized)}

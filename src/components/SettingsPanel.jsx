@@ -2,7 +2,7 @@ import { useState } from 'react'
 import {
   Server, ChevronDown, ChevronUp, X, RefreshCw, Search,
   Cpu, Eye, Network, Wrench, Box, Loader2, Check,
-  MessageSquareText, Pencil, Trash2, Plus, FileCode,
+  MessageSquareText, Pencil, Trash2, Plus, FileCode, Zap,
 } from 'lucide-react'
 import { fetchMcpConfig, saveMcpConfig } from '../api/mcp'
 
@@ -40,7 +40,7 @@ const StateDot = ({ state }) => {
   return <span className="h-1.5 w-1.5 rounded-full bg-gray-600" title="Not loaded" />
 }
 
-const ModelCard = ({ model, selected, onSelect }) => {
+const ModelCard = ({ model, selected, onSelect, forcedTools, onToggleForcedTools }) => {
   const ctx = formatContext(model.maxContext)
   const loadedCtx = formatContext(model.loadedContext)
   const hasTools = model.capabilities?.includes('tool_use')
@@ -97,6 +97,33 @@ const ModelCard = ({ model, selected, onSelect }) => {
           <span className="inline-flex items-center gap-1 rounded-md bg-white/[0.04] px-1.5 py-0.5 text-[10px] text-gray-400">
             <Wrench size={9} strokeWidth={2} />
             tools
+          </span>
+        )}
+        {!isEmbeddings && (
+          <span
+            role="button"
+            tabIndex={0}
+            onClick={(e) => { e.stopPropagation(); onToggleForcedTools(model.id) }}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' || e.key === ' ') {
+                e.preventDefault()
+                e.stopPropagation()
+                onToggleForcedTools(model.id)
+              }
+            }}
+            className={`ml-auto inline-flex cursor-pointer items-center gap-1 rounded-md border px-1.5 py-0.5 text-[10px] transition-colors ${
+              forcedTools
+                ? 'border-mango-400/40 bg-mango-500/15 text-mango-200 hover:bg-mango-500/25'
+                : 'border-white/10 bg-white/[0.02] text-gray-500 hover:border-mango-400/30 hover:text-gray-300'
+            }`}
+            title={
+              forcedTools
+                ? 'Forcing prompt-injected tool calling on. The MCP catalog is prepended to the system prompt and tool calls are parsed back out of the model’s reply via inline-XML markup. Use for backends like Lemonade that don’t pass the OpenAI tools field through to the model. Click to disable.'
+                : 'Force prompt-injected tool calling. Use this when the backend (e.g. Lemonade) doesn’t natively support OpenAI tool calls. Adds the MCP tool catalog to the system prompt; the inline-XML parser picks calls back out of the reply.'
+            }
+          >
+            <Zap size={9} strokeWidth={2.25} />
+            {forcedTools ? 'tools forced' : 'force tools'}
           </span>
         )}
       </div>
@@ -340,6 +367,7 @@ export const SettingsPanel = ({
   presets = [], activePresetId = null,
   onSetActivePreset, onCreatePreset, onUpdatePreset, onDeletePreset,
   mcpServers = [], mcpTools = [], mcpEnabledForModel = false, onMcpConfigSaved,
+  forcedToolModels = new Set(), onToggleForcedTools = () => {},
   minimized, onMinimize, onClose,
 }) => {
   const [editingId, setEditingId] = useState(null)
@@ -598,6 +626,8 @@ export const SettingsPanel = ({
                     model={m}
                     selected={m.id === selectedModel}
                     onSelect={setSelectedModel}
+                    forcedTools={forcedToolModels.has(m.id)}
+                    onToggleForcedTools={onToggleForcedTools}
                   />
                 ))
               )}
