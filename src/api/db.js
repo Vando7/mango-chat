@@ -8,7 +8,7 @@ const DB_FILE = 'chat-app-db.sqlite'
 // Bump this whenever the schema changes. On init we read PRAGMA user_version
 // from the persisted db; if it's lower than SCHEMA_VERSION, every table is
 // dropped and recreated. We don't migrate — chat history is disposable.
-const SCHEMA_VERSION = 5
+const SCHEMA_VERSION = 6
 
 let wasmBlobUrl = null
 
@@ -78,6 +78,7 @@ async function doInit() {
       images TEXT,
       reasoning TEXT,
       model TEXT,
+      tool_calls TEXT,
       is_active INTEGER NOT NULL DEFAULT 0,
       created_at INTEGER NOT NULL,
       UNIQUE (chat_id, position, version),
@@ -210,12 +211,29 @@ const decodeImages = (raw) => {
   }
 }
 
+// Tool calls are stored as a JSON-encoded array of
+// { id, name, args, result, status, error? } objects in the `tool_calls`
+// TEXT column (NULL when none). Same empty-array → NULL convention.
+const encodeToolCalls = (calls) => {
+  if (!calls || calls.length === 0) return null
+  return JSON.stringify(calls)
+}
+const decodeToolCalls = (raw) => {
+  if (!raw) return []
+  try {
+    const parsed = JSON.parse(raw)
+    return Array.isArray(parsed) ? parsed : []
+  } catch {
+    return []
+  }
+}
+
 // Returns { versions, active } where:
 //   versions[position] is an array of { role, content, images, reasoning, model, version, created_at }
 //   active[position]   is the version index currently marked is_active=1
 export function getMessageVersions(chatId) {
   const rows = db.exec(
-    `SELECT position, version, role, content, images, reasoning, model, is_active, created_at
+    `SELECT position, version, role, content, images, reasoning, model, tool_calls, is_active, created_at
      FROM messages WHERE chat_id = ? ORDER BY position ASC, version ASC`,
     [chatId]
   )
@@ -223,7 +241,7 @@ export function getMessageVersions(chatId) {
   const active = []
   if (rows.length === 0) return { versions, active }
   for (const row of rows[0].values) {
-    const [position, version, role, content, images, reasoning, model, isActive, createdAt] = row
+    const [position, version, role, content, images, reasoning, model, toolCalls, isActive, createdAt] = row
     if (!versions[position]) versions[position] = []
     versions[position][version] = {
       role,
@@ -231,6 +249,7 @@ export function getMessageVersions(chatId) {
       images: decodeImages(images),
       reasoning: reasoning || null,
       model: model || null,
+      toolCalls: decodeToolCalls(toolCalls),
       version,
       created_at: createdAt,
     }
@@ -255,16 +274,17 @@ export function saveChat(id, title) {
 
 // Append a brand new message at the next position (version 0, active).
 // `images` should be an array of data URL strings (or null/empty).
+// `toolCalls` is an array of executed tool-call records (or null/empty).
 // Returns { position, version }.
-export function appendMessage(chatId, role, content, images, reasoning, model) {
+export function appendMessage(chatId, role, content, images, reasoning, model, toolCalls) {
   const rows = db.exec('SELECT MAX(position) FROM messages WHERE chat_id = ?', [chatId])
   const maxPos = rows[0]?.values?.[0]?.[0]
   const position = (maxPos === null || maxPos === undefined) ? 0 : maxPos + 1
   const now = Date.now()
   db.run(
-    `INSERT INTO messages (chat_id, position, version, role, content, images, reasoning, model, is_active, created_at)
-     VALUES (?, ?, 0, ?, ?, ?, ?, ?, 1, ?)`,
-    [chatId, position, role, content || '', encodeImages(images), reasoning || null, model || null, now]
+    `INSERT INTO messages (chat_id, position, version, role, content, images, reasoning, model, tool_calls, is_active, created_at)
+     VALUES (?, ?, 0, ?, ?, ?, ?, ?, ?, 1, ?)`,
+    [chatId, position, role, content || '', encodeImages(images), reasoning || null, model || null, encodeToolCalls(toolCalls), now]
   )
   db.run('UPDATE chats SET updated_at = ? WHERE id = ?', [now, chatId])
   persist()
@@ -273,7 +293,7 @@ export function appendMessage(chatId, role, content, images, reasoning, model) {
 
 // Add a new version at an existing position; mark it active and deactivate
 // any prior versions at that position. Returns the new version index.
-export function addNewVersion(chatId, position, role, content, images, reasoning, model) {
+export function addNewVersion(chatId, position, role, content, images, reasoning, model, toolCalls) {
   const rows = db.exec(
     'SELECT MAX(version) FROM messages WHERE chat_id = ? AND position = ?',
     [chatId, position]
@@ -283,22 +303,31 @@ export function addNewVersion(chatId, position, role, content, images, reasoning
   const now = Date.now()
   db.run('UPDATE messages SET is_active = 0 WHERE chat_id = ? AND position = ?', [chatId, position])
   db.run(
-    `INSERT INTO messages (chat_id, position, version, role, content, images, reasoning, model, is_active, created_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?)`,
-    [chatId, position, version, role, content || '', encodeImages(images), reasoning || null, model || null, now]
+    `INSERT INTO messages (chat_id, position, version, role, content, images, reasoning, model, tool_calls, is_active, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?)`,
+    [chatId, position, version, role, content || '', encodeImages(images), reasoning || null, model || null, encodeToolCalls(toolCalls), now]
   )
   db.run('UPDATE chats SET updated_at = ? WHERE id = ?', [now, chatId])
   persist()
   return { position, version }
 }
 
-// Update content + reasoning on an existing version (used when streaming
-// finishes — we don't persist on every chunk).
-export function updateMessageVersion(chatId, position, version, content, reasoning) {
-  db.run(
-    'UPDATE messages SET content = ?, reasoning = ? WHERE chat_id = ? AND position = ? AND version = ?',
-    [content || '', reasoning || null, chatId, position, version]
-  )
+// Update content + reasoning + tool_calls on an existing version (used when
+// streaming finishes — we don't persist on every chunk). Pass `toolCalls`
+// undefined to leave the column untouched (e.g. mid-stream content updates
+// from a non-tool flow).
+export function updateMessageVersion(chatId, position, version, content, reasoning, toolCalls) {
+  if (toolCalls === undefined) {
+    db.run(
+      'UPDATE messages SET content = ?, reasoning = ? WHERE chat_id = ? AND position = ? AND version = ?',
+      [content || '', reasoning || null, chatId, position, version]
+    )
+  } else {
+    db.run(
+      'UPDATE messages SET content = ?, reasoning = ?, tool_calls = ? WHERE chat_id = ? AND position = ? AND version = ?',
+      [content || '', reasoning || null, encodeToolCalls(toolCalls), chatId, position, version]
+    )
+  }
   db.run('UPDATE chats SET updated_at = ? WHERE id = ?', [Date.now(), chatId])
   persist()
 }

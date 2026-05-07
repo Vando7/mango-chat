@@ -11,6 +11,7 @@
     "test:api": "bash scripts/test-api.sh",
     "test:stream": "node scripts/test-stream.js",
     "test:image": "node scripts/test-image.js",
+    "test:mcp": "node scripts/test-mcp.js",
     "check": "bash scripts/check.sh"
   },
   "dependencies": {

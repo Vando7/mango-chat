@@ -53,27 +53,62 @@ export const fetchModels = async () => {
   return list.map((m) => (typeof m === 'string' ? { id: m } : { id: m.id || m.name }))
 }
 
-export async function* chat(history, selectedModel, signal) {
-  const messages = history.map((msg) => {
-    const images = Array.isArray(msg.images) ? msg.images : []
-    if (images.length > 0) {
-      return {
-        role: msg.role,
-        content: [
-          ...(msg.content ? [{ type: 'text', text: msg.content }] : []),
-          ...images.map((url) => ({ type: 'image_url', image_url: { url } })),
-        ],
-      }
+// Map our internal message shape to OpenAI's content-array format.
+// Handles three shapes:
+//  - normal text (user/assistant/system)
+//  - text + image attachments (vision)
+//  - assistant turns with tool_calls (no images)
+//  - {role:'tool', tool_call_id, content} rows (already in OpenAI shape)
+function toOpenAIMessage(msg) {
+  if (msg.role === 'tool') {
+    return {
+      role: 'tool',
+      tool_call_id: msg.tool_call_id,
+      content: typeof msg.content === 'string' ? msg.content : JSON.stringify(msg.content),
     }
-    return { role: msg.role, content: msg.content }
-  })
+  }
 
-  const res = await request('/v1/chat/completions', { model: selectedModel, messages, stream: true }, signal)
+  const out = { role: msg.role }
+  const images = Array.isArray(msg.images) ? msg.images : []
+
+  if (images.length > 0) {
+    out.content = [
+      ...(msg.content ? [{ type: 'text', text: msg.content }] : []),
+      ...images.map((url) => ({ type: 'image_url', image_url: { url } })),
+    ]
+  } else {
+    out.content = msg.content || ''
+  }
+
+  if (msg.role === 'assistant' && Array.isArray(msg.tool_calls) && msg.tool_calls.length > 0) {
+    out.tool_calls = msg.tool_calls
+  }
+  return out
+}
+
+// Streaming chat completion. Yields events shaped:
+//   { text, reasoning, toolCalls, finishReason }
+// `toolCalls` is an array indexed by the OpenAI `tool_calls[].index`,
+// each entry shaped { id, type:'function', function:{ name, arguments:string } }
+// with `arguments` accumulating partial JSON across chunks. Caller is
+// responsible for JSON.parse'ing once `finishReason === 'tool_calls'`.
+export async function* chat(history, selectedModel, signal, tools) {
+  const messages = history.map(toOpenAIMessage)
+
+  const body = { model: selectedModel, messages, stream: true }
+  if (Array.isArray(tools) && tools.length > 0) {
+    body.tools = tools
+    body.tool_choice = 'auto'
+  }
+
+  const res = await request('/v1/chat/completions', body, signal)
 
   const reader = res.body.getReader()
   const decoder = new TextDecoder()
   let fullText = ''
   let reasoningText = ''
+  const toolCalls = [] // sparse-by-index, indexed by delta.tool_calls[].index
+  let finishReason = null
 
   try {
     while (true) {
@@ -88,7 +123,10 @@ export async function* chat(history, selectedModel, signal) {
         if (data === '[DONE]' || !data) continue
         try {
           const parsed = JSON.parse(data)
-          const delta = parsed.choices?.[0]?.delta
+          const choice = parsed.choices?.[0]
+          if (!choice) continue
+          if (choice.finish_reason) finishReason = choice.finish_reason
+          const delta = choice.delta
           if (!delta) continue
 
           let grew = false
@@ -100,10 +138,24 @@ export async function* chat(history, selectedModel, signal) {
             fullText += delta.content
             grew = true
           }
+          if (Array.isArray(delta.tool_calls)) {
+            for (const tc of delta.tool_calls) {
+              const idx = tc.index ?? 0
+              const existing = toolCalls[idx] || { id: '', type: 'function', function: { name: '', arguments: '' } }
+              if (tc.id) existing.id = tc.id
+              if (tc.type) existing.type = tc.type
+              if (tc.function) {
+                if (tc.function.name) existing.function.name = tc.function.name
+                if (tc.function.arguments) existing.function.arguments += tc.function.arguments
+              }
+              toolCalls[idx] = existing
+              grew = true
+            }
+          }
 
           // Skip yielding on metadata-only deltas (role announcements, empty
           // diffs) — every yield triggers a React rerender on the caller.
-          if (grew) yield { text: fullText, reasoning: reasoningText }
+          if (grew) yield { text: fullText, reasoning: reasoningText, toolCalls, finishReason }
         } catch {
           // Skip malformed SSE lines (partial JSON across chunk boundaries).
         }
@@ -116,4 +168,8 @@ export async function* chat(history, selectedModel, signal) {
       throw err
     }
   }
+
+  // Final yield with the resolved finishReason in case the closing chunk
+  // didn't carry any incremental delta.
+  return { text: fullText, reasoning: reasoningText, toolCalls, finishReason }
 }

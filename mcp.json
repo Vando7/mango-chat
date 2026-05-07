@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "date": {
+      "command": "mcp-servers/.venv/bin/python3",
+      "args": ["mcp-servers/date_server.py"]
+    },
+    "sysinfo": {
+      "command": "mcp-servers/.venv/bin/python3",
+      "args": ["mcp-servers/sysinfo_server.py"]
+    }
+  }
+}

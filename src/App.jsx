@@ -1,6 +1,7 @@
 import { useState, useRef, useEffect, useCallback, useMemo } from 'react'
 import { PanelLeft, PanelLeftClose, Settings, Sparkles } from 'lucide-react'
 import { chat, fetchModels, setApiBase } from './api/client'
+import { fetchMcpTools, callMcpTool } from './api/mcp'
 import { MessageList } from './components/MessageList'
 import { ChatInput } from './components/ChatInput'
 import { SettingsPanel } from './components/SettingsPanel'
@@ -23,34 +24,18 @@ import './index.css'
 
 const DEFAULT_SERVER_URL = 'http://172.27.112.1:1234'
 
-const HARDCODED_QWEN_MODEL = 'Qwen3.6-35B-A3B-GGUF-UD-Q2_K_XL'
-
-const HARDCODED_QWEN_ENTRY = {
-  id: HARDCODED_QWEN_MODEL,
-  type: 'llm',
-  publisher: 'unsloth',
-  arch: 'qwen3',
-  quantization: 'Q2_K_XL',
-  state: 'not-loaded',
-  capabilities: [],
-  _manual: true,
-}
-
-const mergeWithHardcoded = (serverModels) => {
-  if (serverModels.some((m) => m.id === HARDCODED_QWEN_MODEL)) return serverModels
-  return [HARDCODED_QWEN_ENTRY, ...serverModels]
-}
-
 const pickLoadedChatModel = (serverModels) =>
   serverModels.find((m) => m.state === 'loaded' && m.type !== 'embeddings')
 
+// Returns '' when no models are available — callers / UI must handle the
+// empty case (the send button is gated on a non-empty `selectedModel`).
 const pickDefaultModel = (serverModels) => {
   const loaded = pickLoadedChatModel(serverModels)
   if (loaded) return loaded.id
   const firstChat = serverModels.find((m) => m.type !== 'embeddings')
   if (firstChat) return firstChat.id
   if (serverModels.length > 0) return serverModels[0].id
-  return HARDCODED_QWEN_MODEL
+  return ''
 }
 
 const sameModelList = (a, b) =>
@@ -62,11 +47,19 @@ const EMPTY_CONVO = { versions: [], active: [] }
 
 const ACTIVE_PRESET_KEY = 'mango.activePresetId'
 
+// Hard cap on tool-use rounds within a single send to prevent runaway loops.
+const MAX_TOOL_TURNS = 8
+
+const modelSupportsTools = (modelId, models) => {
+  const m = models.find((x) => x.id === modelId)
+  return Array.isArray(m?.capabilities) && m.capabilities.includes('tool_use')
+}
+
 export default function App() {
   const [serverUrl, setServerUrl] = useState(DEFAULT_SERVER_URL)
   const [connected, setConnected] = useState(false)
-  const [models, setModels] = useState([HARDCODED_QWEN_ENTRY])
-  const [selectedModel, setSelectedModel] = useState(HARDCODED_QWEN_MODEL)
+  const [models, setModels] = useState([])
+  const [selectedModel, setSelectedModel] = useState('')
   // versions[pos] = [{role,content,image,reasoning,streaming?}, ...]
   // active[pos]   = currently-selected version index for that position
   const [convo, setConvo] = useState(EMPTY_CONVO)
@@ -79,6 +72,8 @@ export default function App() {
   const [settingsMinimized, setSettingsMinimized] = useState(false)
   const [sidebarOpen, setSidebarOpen] = useState(true)
   const [chatRefreshKey, setChatRefreshKey] = useState(0)
+  const [mcpTools, setMcpTools] = useState([])
+  const [mcpServers, setMcpServers] = useState([])
   const [presets, setPresets] = useState([])
   const [activePresetId, setActivePresetIdState] = useState(() => {
     try { return localStorage.getItem(ACTIVE_PRESET_KEY) || null } catch { return null }
@@ -129,16 +124,25 @@ export default function App() {
     try {
       setApiBase(serverUrl)
       const modelList = await fetchModels()
-      const merged = mergeWithHardcoded(modelList)
-      setModels(merged)
+      setModels(modelList)
       setSelectedModel(pickDefaultModel(modelList))
       setConnected(true)
     } catch (err) {
       setError(`Failed to connect: ${err.message}`)
       setConnected(false)
-      setModels([HARDCODED_QWEN_ENTRY])
+      setModels([])
+      setSelectedModel('')
     } finally {
       setLoading(false)
+    }
+    // MCP tool list is independent of the LLM backend — fetch unconditionally.
+    try {
+      const { tools, servers } = await fetchMcpTools()
+      setMcpTools(tools)
+      setMcpServers(servers)
+    } catch {
+      setMcpTools([])
+      setMcpServers([])
     }
   }
 
@@ -209,11 +213,14 @@ export default function App() {
       try {
         const list = await fetchModels()
         if (cancelled) return
-        const merged = mergeWithHardcoded(list)
-        setModels((prev) => (sameModelList(prev, merged) ? prev : merged))
+        setModels((prev) => (sameModelList(prev, list) ? prev : list))
         const loaded = pickLoadedChatModel(list)
         if (loaded) {
           setSelectedModel((cur) => (cur === loaded.id ? cur : loaded.id))
+        } else {
+          // If our current selection vanished from the server, pick a
+          // sane fallback so the dropdown doesn't reference a missing id.
+          setSelectedModel((cur) => (list.some((m) => m.id === cur) ? cur : pickDefaultModel(list)))
         }
       } catch {
         // Transient failure; next tick will retry.
@@ -238,9 +245,22 @@ export default function App() {
       await initDatabase()
       const { versions, active } = getMessageVersions(chatId)
       currentChatIdRef.current = chatId
-      // Strip any lingering streaming flag from rehydrated rows.
+      // Strip any lingering streaming flag from rehydrated rows. Also
+      // demote any non-terminal tool-call statuses (e.g. 'executing' from
+      // a hard refresh mid-call) so the UI doesn't claim a tool is still
+      // running.
       const cleanVersions = versions.map((vs) =>
-        vs.map((v) => ({ ...v, streaming: false }))
+        vs.map((v) => ({
+          ...v,
+          streaming: false,
+          toolCalls: Array.isArray(v.toolCalls)
+            ? v.toolCalls.map((tc) =>
+                tc.status === 'done' || tc.status === 'error'
+                  ? tc
+                  : { ...tc, status: 'error', error: tc.error || 'interrupted' }
+              )
+            : [],
+        }))
       )
       setConvo({ versions: cleanVersions, active })
       setInput('')
@@ -257,64 +277,178 @@ export default function App() {
     setImageUrls([])
   }, [])
 
+  // Replace the assistant slot at (position, version) with a fresh patch.
+  // Used heavily by the multi-turn loop below.
+  const patchAssistantVersion = (position, version, patch) => {
+    setConvo((c) => {
+      const versions = c.versions.map((vs, p) => {
+        if (p !== position) return vs
+        const next = vs.slice()
+        next[version] = { ...next[version], ...patch }
+        return next
+      })
+      return { ...c, versions }
+    })
+  }
+
   const runStream = async (history, chatId, position, version) => {
     abortControllerRef.current = new AbortController()
     const signal = abortControllerRef.current.signal
     setStreaming(true)
     setLoading(true)
 
-    let lastText = ''
-    let lastReasoning = ''
+    // Per-send tools: only attach if the active model advertises tool_use,
+    // and only if we actually have any MCP tools registered.
+    const toolsForRequest =
+      mcpTools.length > 0 && modelSupportsTools(selectedModel, models) ? mcpTools : undefined
+
+    // Cumulative state across multi-turn tool exchanges.
+    let accumulatedText = ''
+    let accumulatedReasoning = ''
+    const executedToolCalls = [] // chronological, persisted on the assistant version
+    const workingHistory = history.slice()
+
+    const joinText = (a, b) => (a && b ? a + '\n\n' + b : a || b || '')
 
     try {
-      const stream = chat(history, selectedModel, signal)
-      for await (const chunk of stream) {
-        lastText = chunk.text
-        lastReasoning = chunk.reasoning
-        setConvo((c) => {
-          const versions = c.versions.map((vs, p) => {
-            if (p !== position) return vs
-            const next = vs.slice()
-            next[version] = { ...next[version], content: chunk.text, reasoning: chunk.reasoning }
-            return next
+      for (let turn = 0; turn < MAX_TOOL_TURNS; turn++) {
+        if (signal.aborted) break
+
+        let turnText = ''
+        let turnReasoning = ''
+        let liveToolCalls = []
+        let finishReason = null
+
+        const stream = chat(workingHistory, selectedModel, signal, toolsForRequest)
+        for await (const chunk of stream) {
+          turnText = chunk.text
+          turnReasoning = chunk.reasoning
+          liveToolCalls = chunk.toolCalls || []
+          if (chunk.finishReason) finishReason = chunk.finishReason
+
+          // Compose the displayed view: cumulative text + this turn's
+          // streaming text, plus the streaming-args tool calls beneath
+          // anything we've already executed.
+          const liveDisplay = liveToolCalls.map((tc) => ({
+            id: tc.id,
+            name: tc.function?.name || '',
+            args: tc.function?.arguments || '',
+            result: '',
+            status: 'streaming-args',
+          }))
+          patchAssistantVersion(position, version, {
+            content: joinText(accumulatedText, turnText),
+            reasoning: joinText(accumulatedReasoning, turnReasoning),
+            toolCalls: [...executedToolCalls, ...liveDisplay],
           })
-          return { ...c, versions }
+        }
+
+        // Stream for this turn ended. Decide: more rounds, or done.
+        const hasToolCalls = liveToolCalls.length > 0 && finishReason === 'tool_calls'
+        accumulatedText = joinText(accumulatedText, turnText)
+        accumulatedReasoning = joinText(accumulatedReasoning, turnReasoning)
+
+        if (!hasToolCalls) break
+
+        // Push the assistant's tool-call turn into history so the next
+        // round sees it (OpenAI requires this).
+        const apiToolCalls = liveToolCalls.map((tc) => ({
+          id: tc.id,
+          type: 'function',
+          function: {
+            name: tc.function?.name || '',
+            arguments: tc.function?.arguments || '',
+          },
+        }))
+        workingHistory.push({
+          role: 'assistant',
+          content: turnText,
+          images: [],
+          tool_calls: apiToolCalls,
         })
-      }
-      setConvo((c) => {
-        const versions = c.versions.map((vs, p) => {
-          if (p !== position) return vs
-          const next = vs.slice()
-          next[version] = { ...next[version], streaming: false }
-          return next
-        })
-        return { ...c, versions }
-      })
-    } catch (err) {
-      setError(err.message)
-      setConvo((c) => {
-        const versions = c.versions.map((vs, p) => {
-          if (p !== position) return vs
-          const next = vs.slice()
-          const cur = next[version]
-          if (cur?.streaming) {
-            next[version] = {
-              ...cur,
-              content: cur.content || ('⚠ ' + err.message),
-              streaming: false,
-            }
-            lastText = next[version].content
+
+        // Promote the live tool calls into executed records (initially
+        // 'executing'), then run them serially. Sequential — most local
+        // tools don't benefit from parallelism and serial logs read better.
+        for (const tc of liveToolCalls) {
+          const record = {
+            id: tc.id,
+            name: tc.function?.name || '',
+            args: tc.function?.arguments || '',
+            result: '',
+            status: 'executing',
+            error: null,
           }
-          return next
-        })
-        return { ...c, versions }
-      })
+          executedToolCalls.push(record)
+          patchAssistantVersion(position, version, {
+            content: accumulatedText,
+            reasoning: accumulatedReasoning,
+            toolCalls: executedToolCalls.slice(),
+          })
+
+          let parsedArgs = {}
+          if (record.args) {
+            try { parsedArgs = JSON.parse(record.args) } catch {
+              record.error = 'invalid JSON arguments from model'
+              record.status = 'error'
+            }
+          }
+
+          if (record.status !== 'error') {
+            try {
+              const result = await callMcpTool(record.name, parsedArgs, signal)
+              record.result = result.content
+              record.status = result.isError ? 'error' : 'done'
+              if (result.isError) record.error = result.content
+            } catch (e) {
+              record.status = 'error'
+              record.error = e.message
+              record.result = `Error: ${e.message}`
+            }
+          } else {
+            record.result = `Error: ${record.error}`
+          }
+
+          patchAssistantVersion(position, version, {
+            toolCalls: executedToolCalls.slice(),
+          })
+
+          // Tool result row goes back to the model.
+          workingHistory.push({
+            role: 'tool',
+            tool_call_id: record.id,
+            content: record.result || '',
+          })
+        }
+
+        if (turn === MAX_TOOL_TURNS - 1) {
+          accumulatedText = joinText(accumulatedText, '_(Tool turn limit reached.)_')
+        }
+      }
+    } catch (err) {
+      if (err.name !== 'AbortError') {
+        setError(err.message)
+        if (!accumulatedText) accumulatedText = '⚠ ' + err.message
+      }
     } finally {
+      patchAssistantVersion(position, version, {
+        content: accumulatedText,
+        reasoning: accumulatedReasoning,
+        toolCalls: executedToolCalls.slice(),
+        streaming: false,
+      })
       setLoading(false)
       setStreaming(false)
       try {
         await initDatabase()
-        updateMessageVersion(chatId, position, version, lastText, lastReasoning)
+        updateMessageVersion(
+          chatId,
+          position,
+          version,
+          accumulatedText,
+          accumulatedReasoning,
+          executedToolCalls,
+        )
       } catch (e) {
         console.error('Failed to persist message version:', e)
       }
@@ -328,8 +462,8 @@ export default function App() {
 
     const userContent = input.trim()
     const userImages = imageUrls.slice()
-    const userMsg = { role: 'user', content: userContent, images: userImages, reasoning: null, model: null }
-    const assistantMsg = { role: 'assistant', content: '', images: [], reasoning: null, model: selectedModel, streaming: true }
+    const userMsg = { role: 'user', content: userContent, images: userImages, reasoning: null, model: null, toolCalls: [] }
+    const assistantMsg = { role: 'assistant', content: '', images: [], reasoning: null, model: selectedModel, toolCalls: [], streaming: true }
 
     // Create chat row if this is the first message.
     let chatId = currentChatIdRef.current
@@ -411,7 +545,7 @@ export default function App() {
       return
     }
 
-    const newAssistant = { role: 'assistant', content: '', images: [], reasoning: null, model: selectedModel, streaming: true }
+    const newAssistant = { role: 'assistant', content: '', images: [], reasoning: null, model: selectedModel, toolCalls: [], streaming: true }
     setConvo((c) => {
       const versions = c.versions.map((vs, p) => {
         if (p !== position) return vs
@@ -613,6 +747,9 @@ export default function App() {
             onCreatePreset={handleCreatePreset}
             onUpdatePreset={handleUpdatePreset}
             onDeletePreset={handleDeletePreset}
+            mcpServers={mcpServers}
+            mcpTools={mcpTools}
+            mcpEnabledForModel={modelSupportsTools(selectedModel, models)}
             minimized={settingsMinimized}
             onMinimize={() => setSettingsMinimized(!settingsMinimized)}
             onClose={() => setShowSettings(false)}

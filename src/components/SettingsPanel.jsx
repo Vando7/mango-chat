@@ -84,12 +84,6 @@ const ModelCard = ({ model, selected, onSelect }) => {
         {model.publisher && <span>{model.publisher}</span>}
         {model.publisher && model.arch && <span className="mx-1 text-gray-700">·</span>}
         {model.arch && <span className="font-mono">{model.arch}</span>}
-        {model._manual && (
-          <>
-            <span className="mx-1 text-gray-700">·</span>
-            <span className="text-amber-400/70">manual</span>
-          </>
-        )}
       </div>
 
       <div className="mt-2 flex flex-wrap items-center gap-1.5">
@@ -191,11 +185,65 @@ const PresetRow = ({ preset, active, onSelect, onEdit, onDelete }) => (
   </div>
 )
 
+const McpServerRow = ({ server, tools }) => {
+  const [expanded, setExpanded] = useState(false)
+  const ready = server.ready
+  const ownTools = tools.filter((t) =>
+    t.function?.name?.startsWith(`mcp__${server.name}__`)
+  )
+  const tone = ready
+    ? 'border-emerald-400/25 bg-emerald-400/10 text-emerald-300'
+    : 'border-red-400/30 bg-red-400/10 text-red-300'
+  return (
+    <div className="overflow-hidden rounded-lg border border-white/5 bg-white/[0.03]">
+      <button
+        type="button"
+        onClick={() => setExpanded((v) => !v)}
+        className="flex w-full items-center gap-2 px-2 py-1.5 text-left transition-colors hover:bg-white/[0.05]"
+        title={server.error || ''}
+      >
+        <Wrench size={11} strokeWidth={2} className={ready ? 'text-mango-300' : 'text-gray-500'} />
+        <span className="truncate text-xs font-medium text-gray-100">{server.name}</span>
+        <span className="ml-auto text-[10px] text-gray-500">
+          {server.tools} tool{server.tools === 1 ? '' : 's'}
+        </span>
+        <span className={`inline-flex items-center gap-1 rounded-full border px-1.5 py-0.5 text-[10px] font-medium ${tone}`}>
+          {ready ? 'ready' : 'error'}
+        </span>
+        <ChevronDown
+          size={11}
+          strokeWidth={2}
+          className={`text-gray-500 transition-transform duration-150 ${expanded ? 'rotate-180' : ''}`}
+        />
+      </button>
+      {expanded && (
+        <div className="border-t border-white/5 px-2 py-1.5 text-[11px]">
+          {!ready && server.error && (
+            <div className="mb-1 text-red-300">{server.error}</div>
+          )}
+          {ownTools.length === 0 && ready && (
+            <div className="text-gray-500 italic">no tools registered</div>
+          )}
+          {ownTools.map((t) => (
+            <div key={t.function.name} className="mb-1 last:mb-0">
+              <div className="font-mono text-gray-200">{t.function.name.split('__').slice(2).join('__')}</div>
+              {t.function.description && (
+                <div className="text-gray-500">{t.function.description.split('\n')[0]}</div>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
 export const SettingsPanel = ({
   serverUrl, setServerUrl, loading, error, connected,
   models, selectedModel, setSelectedModel, onConnect,
   presets = [], activePresetId = null,
   onSetActivePreset, onCreatePreset, onUpdatePreset, onDeletePreset,
+  mcpServers = [], mcpTools = [], mcpEnabledForModel = false,
   minimized, onMinimize, onClose,
 }) => {
   const [editingId, setEditingId] = useState(null)
@@ -360,6 +408,47 @@ export const SettingsPanel = ({
                 />
               )}
             </div>
+          </div>
+
+          {/* MCP servers — read-only indicator. Configure via mcp.json. */}
+          <div>
+            <div className="mb-1.5 flex items-center justify-between">
+              <label className="flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wider text-gray-500">
+                <Wrench size={11} strokeWidth={2} />
+                MCP Tools · {mcpTools.length}
+              </label>
+              <span
+                className={`inline-flex items-center gap-1 rounded-full border px-1.5 py-0.5 text-[10px] font-medium ${
+                  mcpEnabledForModel && mcpTools.length > 0
+                    ? 'border-emerald-400/25 bg-emerald-400/10 text-emerald-300'
+                    : 'border-white/10 bg-white/[0.03] text-gray-500'
+                }`}
+                title={
+                  mcpTools.length === 0
+                    ? 'No MCP tools registered (check mcp.json + dev-server logs)'
+                    : mcpEnabledForModel
+                      ? 'Tools will be sent to the model on the next request'
+                      : 'Selected model does not advertise tool_use capability'
+                }
+              >
+                {mcpTools.length === 0
+                  ? 'none'
+                  : mcpEnabledForModel
+                    ? 'sent to model'
+                    : 'model has no tool_use'}
+              </span>
+            </div>
+            {mcpServers.length === 0 ? (
+              <div className="rounded-lg border border-dashed border-white/5 bg-white/[0.02] px-2 py-2 text-[11px] text-gray-500">
+                No MCP servers configured. Edit <span className="font-mono text-gray-400">mcp.json</span> at the repo root and restart the dev server.
+              </div>
+            ) : (
+              <div className="space-y-1">
+                {mcpServers.map((s) => (
+                  <McpServerRow key={s.name} server={s} tools={mcpTools} />
+                ))}
+              </div>
+            )}
           </div>
 
           {/* Model picker */}

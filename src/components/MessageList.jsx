@@ -8,6 +8,7 @@ import {
   RefreshCw,
   Sparkles,
   Trash2,
+  Wrench,
 } from 'lucide-react'
 
 const REASONING_VERBS = [
@@ -96,7 +97,76 @@ const MessageActions = ({
   )
 }
 
-const MessageBubble = ({ role, content, reasoning, images, streaming }) => {
+const STATUS_LABEL = {
+  'streaming-args': 'Receiving args',
+  executing: 'Running',
+  done: 'Done',
+  error: 'Error',
+}
+const STATUS_TONE = {
+  'streaming-args': 'border-mango-400/30 bg-mango-400/10 text-mango-300',
+  executing: 'border-mango-400/30 bg-mango-400/10 text-mango-300',
+  done: 'border-emerald-400/25 bg-emerald-400/10 text-emerald-300',
+  error: 'border-red-400/30 bg-red-400/10 text-red-300',
+}
+
+const prettyJson = (raw) => {
+  if (raw === null || raw === undefined || raw === '') return ''
+  if (typeof raw !== 'string') return JSON.stringify(raw, null, 2)
+  try { return JSON.stringify(JSON.parse(raw), null, 2) } catch { return raw }
+}
+
+const ToolCallBlock = ({ call }) => {
+  const [expanded, setExpanded] = useState(false)
+  const status = call.status || 'done'
+  const tone = STATUS_TONE[status] || STATUS_TONE.done
+  const label = STATUS_LABEL[status] || status
+  const args = prettyJson(call.args)
+  const live = status === 'streaming-args' || status === 'executing'
+
+  return (
+    <div className="mb-2 overflow-hidden rounded-lg border border-white/5 bg-black/20">
+      <button
+        type="button"
+        onClick={() => setExpanded((v) => !v)}
+        className="flex w-full items-center gap-2 px-2.5 py-1.5 text-left transition-colors hover:bg-white/[0.03]"
+      >
+        <Wrench size={12} strokeWidth={2} className={live ? 'text-mango-300' : 'text-gray-400'} />
+        <span className="truncate font-mono text-[11px] text-gray-200">{call.name || 'tool'}</span>
+        <span className={`ml-auto inline-flex items-center gap-1 rounded-full border px-1.5 py-0.5 text-[10px] font-medium ${tone}`}>
+          {live && (
+            <span className="relative flex h-1 w-1">
+              <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-current opacity-75" />
+              <span className="relative inline-flex h-1 w-1 rounded-full bg-current" />
+            </span>
+          )}
+          {label}
+        </span>
+        <ChevronRight
+          size={11}
+          strokeWidth={2}
+          className={`text-gray-500 transition-transform duration-150 ${expanded ? 'rotate-90' : ''}`}
+        />
+      </button>
+      {expanded && (
+        <div className="border-t border-white/5 px-2.5 py-2 text-[11px] text-gray-300">
+          <div className="mb-1 text-[10px] uppercase tracking-wide text-gray-500">Arguments</div>
+          <pre className="mb-2 overflow-x-auto whitespace-pre-wrap rounded bg-black/30 p-2 font-mono text-[11px] text-gray-200">
+            {args || '(none)'}
+          </pre>
+          <div className="mb-1 text-[10px] uppercase tracking-wide text-gray-500">
+            {status === 'error' ? 'Error' : 'Result'}
+          </div>
+          <pre className="overflow-x-auto whitespace-pre-wrap rounded bg-black/30 p-2 font-mono text-[11px] text-gray-200">
+            {call.result || (live ? '…' : '(empty)')}
+          </pre>
+        </div>
+      )}
+    </div>
+  )
+}
+
+const MessageBubble = ({ role, content, reasoning, images, toolCalls, streaming }) => {
   const imageList = Array.isArray(images) ? images : []
   const reasoningRef = useRef(null)
   const reasoningContainerRef = useRef(null)
@@ -229,6 +299,13 @@ const MessageBubble = ({ role, content, reasoning, images, streaming }) => {
                 </div>
               </>
             )}
+          </div>
+        )}
+        {role === 'assistant' && Array.isArray(toolCalls) && toolCalls.length > 0 && (
+          <div className="mb-2">
+            {toolCalls.map((call) => (
+              <ToolCallBlock key={call.id || call.name} call={call} />
+            ))}
           </div>
         )}
         {role === 'assistant' && content ? (

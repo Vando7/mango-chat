@@ -1,6 +1,8 @@
 import { defineConfig } from 'vite'
+import { mcpPlugin } from './vite-plugin-mcp.js'
 
 export default defineConfig({
+  plugins: [mcpPlugin()],
   server: {
     host: true,
     proxy: {
