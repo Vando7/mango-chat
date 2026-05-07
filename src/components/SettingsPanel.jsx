@@ -2,6 +2,7 @@ import { useState } from 'react'
 import {
   Server, ChevronDown, ChevronUp, X, RefreshCw, Search,
   Cpu, Eye, Network, Wrench, Box, Loader2, Check,
+  MessageSquareText, Pencil, Trash2, Plus,
 } from 'lucide-react'
 
 const formatContext = (n) => {
@@ -108,11 +109,97 @@ const ModelCard = ({ model, selected, onSelect }) => {
   )
 }
 
+const PresetEditor = ({ initialName, initialContent, onSave, onCancel, saveLabel = 'Save' }) => {
+  const [name, setName] = useState(initialName || '')
+  const [content, setContent] = useState(initialContent || '')
+  const canSave = name.trim().length > 0 && content.trim().length > 0
+  return (
+    <div className="rounded-lg border border-mango-400/30 bg-black/30 p-2 space-y-1.5">
+      <input
+        type="text"
+        value={name}
+        onChange={(e) => setName(e.target.value)}
+        placeholder="Preset name"
+        className="w-full rounded-md border border-white/10 bg-black/40 px-2 py-1 text-xs text-white placeholder-gray-500 focus:border-mango-400/50 focus:outline-none focus:ring-2 focus:ring-mango-400/10"
+        autoFocus
+      />
+      <textarea
+        value={content}
+        onChange={(e) => setContent(e.target.value)}
+        placeholder="System prompt content…"
+        rows={5}
+        className="w-full resize-y rounded-md border border-white/10 bg-black/40 px-2 py-1 text-xs text-gray-200 placeholder-gray-600 focus:border-mango-400/50 focus:outline-none focus:ring-2 focus:ring-mango-400/10"
+      />
+      <div className="flex justify-end gap-1.5">
+        <button
+          onClick={onCancel}
+          className="rounded-md border border-white/10 bg-white/[0.03] px-2 py-1 text-[11px] text-gray-300 hover:bg-white/[0.06]"
+        >
+          Cancel
+        </button>
+        <button
+          onClick={() => canSave && onSave(name.trim(), content.trim())}
+          disabled={!canSave}
+          className="rounded-md bg-gradient-to-br from-mango-400 to-amber-500 px-2 py-1 text-[11px] font-medium text-white shadow-md shadow-mango-500/20 hover:scale-[1.02] active:scale-95 disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:scale-100"
+        >
+          {saveLabel}
+        </button>
+      </div>
+    </div>
+  )
+}
+
+const PresetRow = ({ preset, active, onSelect, onEdit, onDelete }) => (
+  <div
+    className={`group flex items-center gap-1.5 rounded-lg border px-2 py-1.5 transition-all ${
+      active
+        ? 'border-mango-400/60 bg-mango-500/10 ring-1 ring-mango-400/40'
+        : 'border-white/5 bg-white/[0.03] hover:border-mango-400/30 hover:bg-white/[0.05]'
+    }`}
+  >
+    <button
+      type="button"
+      onClick={onSelect}
+      className="flex min-w-0 flex-1 items-center gap-1.5 text-left"
+      title={preset.content}
+    >
+      <span
+        className={`flex h-3.5 w-3.5 flex-shrink-0 items-center justify-center rounded-full border ${
+          active ? 'border-mango-300 bg-gradient-to-br from-mango-400 to-amber-500' : 'border-white/20'
+        }`}
+      >
+        {active && <Check size={9} strokeWidth={3} className="text-white" />}
+      </span>
+      <span className="truncate text-xs text-gray-100">{preset.name}</span>
+    </button>
+    <button
+      onClick={onEdit}
+      className="icon-btn-sm opacity-0 group-hover:opacity-100"
+      title="Edit"
+      aria-label="Edit preset"
+    >
+      <Pencil size={12} strokeWidth={2} />
+    </button>
+    <button
+      onClick={onDelete}
+      className="icon-btn-sm opacity-0 group-hover:opacity-100 hover:!text-red-400"
+      title="Delete"
+      aria-label="Delete preset"
+    >
+      <Trash2 size={12} strokeWidth={2} />
+    </button>
+  </div>
+)
+
 export const SettingsPanel = ({
   serverUrl, setServerUrl, loading, error, connected,
   models, selectedModel, setSelectedModel, onConnect,
+  presets = [], activePresetId = null,
+  onSetActivePreset, onCreatePreset, onUpdatePreset, onDeletePreset,
   minimized, onMinimize, onClose,
 }) => {
+  const [editingId, setEditingId] = useState(null)
+  const [creating, setCreating] = useState(false)
   const [filter, setFilter] = useState('')
   const filterLower = filter.trim().toLowerCase()
   const filtered = filterLower
@@ -199,6 +286,80 @@ export const SettingsPanel = ({
                 {error}
               </p>
             )}
+          </div>
+
+          {/* System Prompt presets */}
+          <div>
+            <div className="mb-1.5 flex items-center justify-between">
+              <label className="flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wider text-gray-500">
+                <MessageSquareText size={11} strokeWidth={2} />
+                System Prompt · {presets.length}
+              </label>
+              {!creating && editingId === null && (
+                <button
+                  onClick={() => setCreating(true)}
+                  className="inline-flex items-center gap-1 rounded-md border border-white/10 bg-white/[0.03] px-1.5 py-0.5 text-[10px] text-gray-300 hover:border-mango-400/30 hover:bg-white/[0.06]"
+                  title="New preset"
+                >
+                  <Plus size={10} strokeWidth={2.5} />
+                  New
+                </button>
+              )}
+            </div>
+            <div className="space-y-1">
+              <button
+                type="button"
+                onClick={() => onSetActivePreset(null)}
+                className={`flex w-full items-center gap-1.5 rounded-lg border px-2 py-1.5 text-left transition-all ${
+                  !activePresetId
+                    ? 'border-mango-400/60 bg-mango-500/10 ring-1 ring-mango-400/40'
+                    : 'border-white/5 bg-white/[0.03] hover:border-mango-400/30 hover:bg-white/[0.05]'
+                }`}
+              >
+                <span
+                  className={`flex h-3.5 w-3.5 flex-shrink-0 items-center justify-center rounded-full border ${
+                    !activePresetId ? 'border-mango-300 bg-gradient-to-br from-mango-400 to-amber-500' : 'border-white/20'
+                  }`}
+                >
+                  {!activePresetId && <Check size={9} strokeWidth={3} className="text-white" />}
+                </span>
+                <span className="truncate text-xs text-gray-400">None</span>
+              </button>
+              {presets.map((p) =>
+                editingId === p.id ? (
+                  <PresetEditor
+                    key={p.id}
+                    initialName={p.name}
+                    initialContent={p.content}
+                    onSave={async (name, content) => {
+                      await onUpdatePreset(p.id, name, content)
+                      setEditingId(null)
+                    }}
+                    onCancel={() => setEditingId(null)}
+                  />
+                ) : (
+                  <PresetRow
+                    key={p.id}
+                    preset={p}
+                    active={p.id === activePresetId}
+                    onSelect={() => onSetActivePreset(p.id)}
+                    onEdit={() => { setEditingId(p.id); setCreating(false) }}
+                    onDelete={() => onDeletePreset(p.id)}
+                  />
+                )
+              )}
+              {creating && (
+                <PresetEditor
+                  saveLabel="Create"
+                  onSave={async (name, content) => {
+                    const created = await onCreatePreset(name, content)
+                    if (created) onSetActivePreset(created.id)
+                    setCreating(false)
+                  }}
+                  onCancel={() => setCreating(false)}
+                />
+              )}
+            </div>
           </div>
 
           {/* Model picker */}

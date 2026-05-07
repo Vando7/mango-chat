@@ -14,6 +14,10 @@ import {
   setActiveVersion,
   deleteFromPosition,
   getMessageVersions,
+  listPresets,
+  createPreset,
+  updatePreset,
+  deletePreset,
 } from './api/db'
 import './index.css'
 
@@ -56,6 +60,8 @@ const sameModelList = (a, b) =>
 // Empty conversation shape used by useState initializer and reset logic.
 const EMPTY_CONVO = { versions: [], active: [] }
 
+const ACTIVE_PRESET_KEY = 'mango.activePresetId'
+
 export default function App() {
   const [serverUrl, setServerUrl] = useState(DEFAULT_SERVER_URL)
   const [connected, setConnected] = useState(false)
@@ -73,6 +79,26 @@ export default function App() {
   const [settingsMinimized, setSettingsMinimized] = useState(false)
   const [sidebarOpen, setSidebarOpen] = useState(true)
   const [chatRefreshKey, setChatRefreshKey] = useState(0)
+  const [presets, setPresets] = useState([])
+  const [activePresetId, setActivePresetIdState] = useState(() => {
+    try { return localStorage.getItem(ACTIVE_PRESET_KEY) || null } catch { return null }
+  })
+
+  const setActivePresetId = useCallback((id) => {
+    setActivePresetIdState(id)
+    try {
+      if (id) localStorage.setItem(ACTIVE_PRESET_KEY, id)
+      else localStorage.removeItem(ACTIVE_PRESET_KEY)
+    } catch {
+      // localStorage may be unavailable (private mode); selection is still
+      // honored in-memory for the session.
+    }
+  }, [])
+
+  const activePreset = useMemo(
+    () => presets.find((p) => p.id === activePresetId) || null,
+    [presets, activePresetId]
+  )
 
   const messagesEndRef = useRef(null)
   const abortControllerRef = useRef(null)
@@ -120,7 +146,56 @@ export default function App() {
     if (autoConnectedRef.current) return
     autoConnectedRef.current = true
     handleConnect()
+    ;(async () => {
+      try {
+        await initDatabase()
+        setPresets(listPresets())
+      } catch (e) {
+        console.error('Failed to load presets:', e)
+      }
+    })()
     // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
+  const handleCreatePreset = useCallback(async (name, content) => {
+    try {
+      await initDatabase()
+      const created = createPreset(name, content)
+      setPresets(listPresets())
+      return created
+    } catch (e) {
+      console.error('Failed to create preset:', e)
+      setError('Failed to create preset: ' + e.message)
+      return null
+    }
+  }, [])
+
+  const handleUpdatePreset = useCallback(async (id, name, content) => {
+    try {
+      await initDatabase()
+      updatePreset(id, name, content)
+      setPresets(listPresets())
+    } catch (e) {
+      console.error('Failed to update preset:', e)
+      setError('Failed to update preset: ' + e.message)
+    }
+  }, [])
+
+  const handleDeletePreset = useCallback(async (id) => {
+    try {
+      await initDatabase()
+      deletePreset(id)
+      setPresets(listPresets())
+      // If we deleted the active preset, fall back to "None".
+      setActivePresetIdState((cur) => {
+        if (cur !== id) return cur
+        try { localStorage.removeItem(ACTIVE_PRESET_KEY) } catch { /* ignore */ }
+        return null
+      })
+    } catch (e) {
+      console.error('Failed to delete preset:', e)
+      setError('Failed to delete preset: ' + e.message)
+    }
   }, [])
 
   useEffect(() => {
@@ -278,9 +353,11 @@ export default function App() {
       return
     }
 
-    // Build history to send: existing active path + the user msg we just
-    // appended. The empty/streaming assistant slot is not included.
+    // Build history to send: optional system preset + existing active path +
+    // the user msg we just appended. The empty/streaming assistant slot is
+    // not included.
     const historyToSend = [
+      ...(activePreset?.content ? [{ role: 'system', content: activePreset.content, images: [] }] : []),
       ...convo.versions.map((vs, p) => {
         const v = vs[convo.active[p]]
         return { role: v.role, content: v.content, images: v.images || [] }
@@ -347,8 +424,12 @@ export default function App() {
       return { versions, active }
     })
 
-    // History: active path up to (but not including) this position.
+    // History: optional system preset + active path up to (but not
+    // including) this position.
     const historyToSend = []
+    if (activePreset?.content) {
+      historyToSend.push({ role: 'system', content: activePreset.content, images: [] })
+    }
     for (let p = 0; p < position; p++) {
       const v = convo.versions[p][convo.active[p]]
       historyToSend.push({ role: v.role, content: v.content, images: v.images || [] })
@@ -526,6 +607,12 @@ export default function App() {
             selectedModel={selectedModel}
             setSelectedModel={setSelectedModel}
             onConnect={handleConnect}
+            presets={presets}
+            activePresetId={activePresetId}
+            onSetActivePreset={setActivePresetId}
+            onCreatePreset={handleCreatePreset}
+            onUpdatePreset={handleUpdatePreset}
+            onDeletePreset={handleDeletePreset}
             minimized={settingsMinimized}
             onMinimize={() => setSettingsMinimized(!settingsMinimized)}
             onClose={() => setShowSettings(false)}
