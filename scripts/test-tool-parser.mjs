@@ -45,6 +45,13 @@ const fixtures = [
   { name: 'qwen-style invalid json falls back to malformed surfacing',
     input: '<tool_call>{"name": "t", "arguments": </tool_call>',
     want: { visibleContains: '<tool_call>', toolCallsLen: 0 } },
+  // ---- Tool calls embedded inside a <think> block ------------------------
+  { name: 'qwen tool call inside <think> still fires',
+    input: '<think>let me check the date.\n<tool_call>{"name": "mcp__date__now", "arguments": {}}</tool_call>\nthat should do it.</think>',
+    want: { visible: '', toolCallsLen: 1, name: 'mcp__date__now', args: '{}' } },
+  { name: 'reasoning around in-think call is preserved (markup stripped)',
+    input: '<think>plan: <tool_call>{"name":"t","arguments":{"a":1}}</tool_call> done</think>after',
+    want: { visible: 'after', reasoning: 'plan:  done', toolCallsLen: 1, name: 't', argsKeys: ['a'] } },
 ]
 
 let failed = 0

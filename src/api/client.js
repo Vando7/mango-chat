@@ -187,29 +187,44 @@ export const buildToolCatalogPrompt = (tools) => {
   }
 
   const lines = [
-    'You have access to the following tools. To call a tool, emit ONLY a',
-    '<tool_call> block directly in your reply (no code fences, no surrounding',
-    'text). Either of the following two formats is accepted — pick whichever',
-    'your training prefers:',
+    'You have access to the tools listed below. When the user asks for',
+    'something a tool can answer, your ENTIRE next response must be a single',
+    '<tool_call> block — no preamble, no acknowledgment ("sure", "let me…",',
+    '"I\'ll call X"), no code fences, no explanation of what you\'re about to',
+    'do. The host will execute the tool and feed the result back to you on',
+    'the next turn; that is when you write the user-facing answer.',
     '',
-    'Format A (JSON, Hermes/Qwen-style):',
+    'Examples (assume mcp__date__now exists):',
+    '',
+    'User: What\'s today\'s date?',
+    'You: <tool_call>{"name": "mcp__date__now", "arguments": {}}</tool_call>',
+    '',
+    'User: Search HN for "rust async".',
+    'You: <tool_call>{"name": "mcp__deep-dive__hn_search", "arguments": {"query": "rust async"}}</tool_call>',
+    '',
+    'WRONG (do not do these):',
+    '  "Sure, let me check the date for you." [stops with no tool_call]',
+    '  "I\'ll call get_date now." <tool_call>…</tool_call>   ← preamble first',
+    '  ```<tool_call>…</tool_call>```                        ← code fences',
+    '',
+    'Two formats are accepted; prefer Format A (JSON):',
+    '',
+    'Format A — JSON (Hermes / Qwen-style):',
     '<tool_call>',
     '{"name": "TOOL_NAME", "arguments": {"ARG_NAME": "VALUE"}}',
     '</tool_call>',
     '',
-    'Format B (XML, Nemotron-style):',
+    'Format B — XML (Nemotron-style):',
     '<tool_call>',
     '<function=TOOL_NAME>',
     '<parameter=ARG_NAME>VALUE</parameter>',
     '</function>',
     '</tool_call>',
     '',
-    'Stop generating immediately after the closing </tool_call>; the host will',
-    'execute the tool and give you the result on the next turn. In Format B,',
-    'VALUE is parsed as JSON when possible, else taken verbatim — for arrays,',
-    'objects, numbers and booleans emit raw JSON (e.g.',
+    'In Format B, VALUE is parsed as JSON when possible, else taken verbatim —',
+    'for arrays, objects, numbers and booleans emit raw JSON (e.g.',
     '<parameter=urls>["https://x"]</parameter>). Do not invent tools that are',
-    'not listed below.',
+    'not listed below. If no tool is needed, answer normally.',
     '',
     'Available tools:',
     '',
@@ -254,15 +269,46 @@ export const extractNemotronMarkup = (rawText) => {
   const n = rawText.length
   let i = 0
 
+  // Scan a chunk of text (typically the body of a <think> block) and pull
+  // any `<tool_call>…</tool_call>` markup out as real calls. Returns the
+  // residual reasoning text with the markup stripped. Qwen3 in thinking
+  // mode often emits its tool calls inline inside <think>, and we want them
+  // to actually fire rather than disappear into the reasoning channel.
+  const liftCallsFromInner = (text) => {
+    let out = ''
+    let j = 0
+    const len = text.length
+    while (j < len) {
+      const open = text.indexOf('<tool_call>', j)
+      if (open === -1) {
+        out += text.slice(j)
+        break
+      }
+      const close = text.indexOf('</tool_call>', open + 11)
+      if (close === -1) {
+        // Incomplete — keep the rest in reasoning so we don't lose it.
+        out += text.slice(j)
+        break
+      }
+      out += text.slice(j, open)
+      const block = text.slice(open + 11, close)
+      const parsed = parseToolCallBlock(block, toolCalls.length)
+      if (parsed) toolCalls.push(parsed)
+      else out += text.slice(open, close + '</tool_call>'.length)
+      j = close + '</tool_call>'.length
+    }
+    return out
+  }
+
   while (i < n) {
     if (rawText.startsWith('<think>', i)) {
       const end = rawText.indexOf('</think>', i + 7)
       if (end === -1) {
         // Unclosed — accumulate as in-progress reasoning, drop the rest.
-        reasoning += rawText.slice(i + 7)
+        reasoning += liftCallsFromInner(rawText.slice(i + 7))
         i = n
       } else {
-        reasoning += rawText.slice(i + 7, end)
+        reasoning += liftCallsFromInner(rawText.slice(i + 7, end))
         i = end + '</think>'.length
       }
     } else if (rawText.startsWith('<tool_call>', i)) {
