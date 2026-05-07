@@ -2,8 +2,9 @@ import { useState } from 'react'
 import {
   Server, ChevronDown, ChevronUp, X, RefreshCw, Search,
   Cpu, Eye, Network, Wrench, Box, Loader2, Check,
-  MessageSquareText, Pencil, Trash2, Plus,
+  MessageSquareText, Pencil, Trash2, Plus, FileCode,
 } from 'lucide-react'
+import { fetchMcpConfig, saveMcpConfig } from '../api/mcp'
 
 const formatContext = (n) => {
   if (!n || typeof n !== 'number') return null
@@ -185,6 +186,101 @@ const PresetRow = ({ preset, active, onSelect, onEdit, onDelete }) => (
   </div>
 )
 
+const DEFAULT_MCP_CONFIG = `{
+  "mcpServers": {}
+}
+`
+
+const McpConfigEditor = ({ onClose, onSaved }) => {
+  const [content, setContent] = useState(null) // null = loading
+  const [path, setPath] = useState('')
+  const [error, setError] = useState('')
+  const [saving, setSaving] = useState(false)
+  const [loadError, setLoadError] = useState('')
+
+  // Defer initial load until the editor opens so we always see the latest
+  // on-disk state (the user may have edited the file in another editor).
+  if (content === null && !loadError) {
+    fetchMcpConfig()
+      .then((data) => {
+        setContent(data.content || DEFAULT_MCP_CONFIG)
+        setPath(data.path || '')
+      })
+      .catch((e) => setLoadError(e.message))
+    return (
+      <div className="rounded-lg border border-mango-400/30 bg-black/30 p-3 text-[11px] text-gray-400">
+        Loading mcp.json…
+      </div>
+    )
+  }
+
+  if (loadError) {
+    return (
+      <div className="rounded-lg border border-red-400/30 bg-red-400/10 p-2 text-[11px] text-red-300">
+        Failed to load: {loadError}
+      </div>
+    )
+  }
+
+  const handleSave = async () => {
+    setError('')
+    setSaving(true)
+    try {
+      const result = await saveMcpConfig(content)
+      onSaved(result)
+      onClose()
+    } catch (e) {
+      setError(e.message)
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  return (
+    <div className="rounded-lg border border-mango-400/30 bg-black/30 p-2 space-y-1.5">
+      {path && (
+        <div className="truncate font-mono text-[10px] text-gray-500" title={path}>
+          {path}
+        </div>
+      )}
+      <textarea
+        value={content}
+        onChange={(e) => setContent(e.target.value)}
+        spellCheck={false}
+        rows={12}
+        className="w-full resize-y rounded-md border border-white/10 bg-black/40 px-2 py-1 font-mono text-[11px] text-gray-200 placeholder-gray-600 focus:border-mango-400/50 focus:outline-none focus:ring-2 focus:ring-mango-400/10"
+      />
+      {error && (
+        <div className="rounded-md border border-red-400/30 bg-red-400/10 px-2 py-1 text-[11px] text-red-300">
+          {error}
+        </div>
+      )}
+      <div className="flex items-center justify-between gap-1.5">
+        <span className="text-[10px] text-gray-500">
+          Saving restarts every server in-process.
+        </span>
+        <div className="flex gap-1.5">
+          <button
+            onClick={onClose}
+            disabled={saving}
+            className="rounded-md border border-white/10 bg-white/[0.03] px-2 py-1 text-[11px] text-gray-300 hover:bg-white/[0.06] disabled:opacity-50"
+          >
+            Cancel
+          </button>
+          <button
+            onClick={handleSave}
+            disabled={saving}
+            className="inline-flex items-center gap-1 rounded-md bg-gradient-to-br from-mango-400 to-amber-500 px-2 py-1 text-[11px] font-medium text-white shadow-md shadow-mango-500/20 hover:scale-[1.02] active:scale-95 disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:scale-100"
+          >
+            {saving && <Loader2 size={11} className="animate-spin" />}
+            {saving ? 'Saving…' : 'Save & Restart'}
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 const McpServerRow = ({ server, tools }) => {
   const [expanded, setExpanded] = useState(false)
   const ready = server.ready
@@ -243,12 +339,13 @@ export const SettingsPanel = ({
   models, selectedModel, setSelectedModel, onConnect,
   presets = [], activePresetId = null,
   onSetActivePreset, onCreatePreset, onUpdatePreset, onDeletePreset,
-  mcpServers = [], mcpTools = [], mcpEnabledForModel = false,
+  mcpServers = [], mcpTools = [], mcpEnabledForModel = false, onMcpConfigSaved,
   minimized, onMinimize, onClose,
 }) => {
   const [editingId, setEditingId] = useState(null)
   const [creating, setCreating] = useState(false)
   const [filter, setFilter] = useState('')
+  const [editingMcpConfig, setEditingMcpConfig] = useState(false)
   const filterLower = filter.trim().toLowerCase()
   const filtered = filterLower
     ? models.filter((m) =>
@@ -410,37 +507,54 @@ export const SettingsPanel = ({
             </div>
           </div>
 
-          {/* MCP servers — read-only indicator. Configure via mcp.json. */}
+          {/* MCP servers — read-only indicator + inline mcp.json editor. */}
           <div>
-            <div className="mb-1.5 flex items-center justify-between">
+            <div className="mb-1.5 flex items-center justify-between gap-1.5">
               <label className="flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wider text-gray-500">
                 <Wrench size={11} strokeWidth={2} />
                 MCP Tools · {mcpTools.length}
               </label>
-              <span
-                className={`inline-flex items-center gap-1 rounded-full border px-1.5 py-0.5 text-[10px] font-medium ${
-                  mcpEnabledForModel && mcpTools.length > 0
-                    ? 'border-emerald-400/25 bg-emerald-400/10 text-emerald-300'
-                    : 'border-white/10 bg-white/[0.03] text-gray-500'
-                }`}
-                title={
-                  mcpTools.length === 0
-                    ? 'No MCP tools registered (check mcp.json + dev-server logs)'
+              <div className="flex items-center gap-1.5">
+                <span
+                  className={`inline-flex items-center gap-1 rounded-full border px-1.5 py-0.5 text-[10px] font-medium ${
+                    mcpEnabledForModel && mcpTools.length > 0
+                      ? 'border-emerald-400/25 bg-emerald-400/10 text-emerald-300'
+                      : 'border-white/10 bg-white/[0.03] text-gray-500'
+                  }`}
+                  title={
+                    mcpTools.length === 0
+                      ? 'No MCP tools registered (check mcp.json + dev-server logs)'
+                      : mcpEnabledForModel
+                        ? 'Tools will be sent to the model on the next request'
+                        : 'Selected model does not advertise tool_use capability'
+                  }
+                >
+                  {mcpTools.length === 0
+                    ? 'none'
                     : mcpEnabledForModel
-                      ? 'Tools will be sent to the model on the next request'
-                      : 'Selected model does not advertise tool_use capability'
-                }
-              >
-                {mcpTools.length === 0
-                  ? 'none'
-                  : mcpEnabledForModel
-                    ? 'sent to model'
-                    : 'model has no tool_use'}
-              </span>
+                      ? 'sent to model'
+                      : 'model has no tool_use'}
+                </span>
+                {!editingMcpConfig && (
+                  <button
+                    onClick={() => setEditingMcpConfig(true)}
+                    className="inline-flex items-center gap-1 rounded-md border border-white/10 bg-white/[0.03] px-1.5 py-0.5 text-[10px] text-gray-300 hover:border-mango-400/30 hover:bg-white/[0.06]"
+                    title="Edit mcp.json"
+                  >
+                    <FileCode size={10} strokeWidth={2} />
+                    Edit
+                  </button>
+                )}
+              </div>
             </div>
-            {mcpServers.length === 0 ? (
+            {editingMcpConfig ? (
+              <McpConfigEditor
+                onClose={() => setEditingMcpConfig(false)}
+                onSaved={(result) => onMcpConfigSaved?.(result)}
+              />
+            ) : mcpServers.length === 0 ? (
               <div className="rounded-lg border border-dashed border-white/5 bg-white/[0.02] px-2 py-2 text-[11px] text-gray-500">
-                No MCP servers configured. Edit <span className="font-mono text-gray-400">mcp.json</span> at the repo root and restart the dev server.
+                No MCP servers configured. Click <span className="font-mono text-gray-400">Edit</span> above to set up <span className="font-mono text-gray-400">mcp.json</span>.
               </div>
             ) : (
               <div className="space-y-1">

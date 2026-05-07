@@ -2,22 +2,25 @@
 //
 // On dev-server start it reads mcp.json from the project root, spawns each
 // declared server as a stdio child, runs the JSON-RPC handshake
-// (initialize → notifications/initialized → tools/list), then exposes two
+// (initialize → notifications/initialized → tools/list), then exposes four
 // HTTP endpoints to the frontend:
 //
-//   GET  /mcp/tools  → { tools: [{ type:'function', function:{name,...} }, ...] }
-//   POST /mcp/call   → body { name: 'mcp__<server>__<tool>', arguments: {...} }
-//                       → { content: '<joined text>', isError: bool, raw }
+//   GET  /mcp/tools  → { tools: [...flat OpenAI function-tool], servers: [...] }
+//   POST /mcp/call   → { name: 'mcp__<srv>__<tool>', arguments } → result
+//   GET  /mcp/config → { content: '<file text>', exists: bool, path }
+//   POST /mcp/config → { content: '<new text>' } → validates, writes,
+//                      kills children, respawns from the new config
 //
 // Tools are flattened across servers and renamed to `mcp__<server>__<tool>`
 // so the LLM gets a flat namespace and the frontend can route calls back
 // from a tool name alone.
 //
-// If mcp.json is missing or empty the plugin no-ops cleanly: both endpoints
-// reply with an empty list / 503 so the rest of the app keeps working.
+// If mcp.json is missing or empty the plugin no-ops cleanly: GET endpoints
+// return empty lists and POST /mcp/call returns 503 so the rest of the app
+// keeps working.
 
 import { spawn } from 'node:child_process'
-import { readFileSync } from 'node:fs'
+import { readFileSync, writeFileSync, renameSync, existsSync } from 'node:fs'
 import { resolve } from 'node:path'
 
 const PROTOCOL_VERSION = '2024-11-05'
@@ -175,10 +178,23 @@ function flattenContent(content) {
     .join('\n')
 }
 
+// Read mcp.json (or return an empty config if missing/unreadable). Used both
+// at boot and when serving GET /mcp/config.
+function readConfig(configPath) {
+  try {
+    const raw = readFileSync(configPath, 'utf8')
+    return { ok: true, raw, parsed: JSON.parse(raw) }
+  } catch (e) {
+    return { ok: false, raw: '', error: e, parsed: { mcpServers: {} } }
+  }
+}
+
 export function mcpPlugin(options = {}) {
   const configFile = options.configFile || 'mcp.json'
-  let handles = []
-  let initPromise = null
+  // Captured in closures shared between the boot path and the config-reload
+  // path — they mutate `state` instead of being recreated, so middleware
+  // closures see the latest set of handles after a hot-reload.
+  const state = { handles: [], initPromise: Promise.resolve() }
 
   return {
     name: 'mango-chat:mcp-bridge',
@@ -188,18 +204,16 @@ export function mcpPlugin(options = {}) {
       const root = server.config.root
       const configPath = resolve(root, configFile)
 
-      let config
-      try {
-        config = JSON.parse(readFileSync(configPath, 'utf8'))
-      } catch (e) {
-        console.log(`[mcp] no servers configured (${configPath} ${e.code === 'ENOENT' ? 'missing' : 'unreadable'})`)
-        config = { mcpServers: {} }
-      }
-
-      const entries = Object.entries(config.mcpServers || {})
-      if (entries.length === 0) {
-        initPromise = Promise.resolve()
-      } else {
+      // Spin up servers from the on-disk config. Returns the new initPromise
+      // (resolves when every server has finished its handshake or failed).
+      const startFromConfig = (parsedConfig) => {
+        const entries = Object.entries(parsedConfig?.mcpServers || {})
+        if (entries.length === 0) {
+          state.handles = []
+          state.initPromise = Promise.resolve()
+          return state.initPromise
+        }
+        const handles = []
         for (const [name, spec] of entries) {
           try {
             handles.push(makeServerHandle(name, spec, root))
@@ -207,21 +221,35 @@ export function mcpPlugin(options = {}) {
             console.warn(`[mcp] ${name}: failed to spawn — ${e.message}`)
           }
         }
-        initPromise = Promise.all(handles.map(initServer))
+        state.handles = handles
+        state.initPromise = Promise.all(handles.map(initServer))
+        return state.initPromise
       }
 
+      // Tear down all current children. Idempotent.
+      const stopAll = () => {
+        for (const h of state.handles) {
+          try { h.child.kill('SIGTERM') } catch { /* ignore */ }
+        }
+        state.handles = []
+      }
+
+      const initial = readConfig(configPath)
+      if (!initial.ok) {
+        const reason = initial.error?.code === 'ENOENT' ? 'missing' : 'unreadable'
+        console.log(`[mcp] no servers configured (${configPath} ${reason})`)
+      }
+      startFromConfig(initial.parsed)
+
+      // Cover every shutdown path: graceful HTTP close, terminal signals,
+      // and the catch-all `exit` (npm sometimes forwards only SIGHUP, which
+      // wouldn't otherwise trigger our handlers).
       let cleaned = false
       const cleanup = () => {
         if (cleaned) return
         cleaned = true
-        for (const h of handles) {
-          try { h.child.kill('SIGTERM') } catch { /* ignore */ }
-        }
-        handles = []
+        stopAll()
       }
-      // Cover every shutdown path: graceful HTTP close, terminal signals,
-      // and the catch-all `exit` (npm sometimes forwards only SIGHUP, which
-      // wouldn't otherwise trigger our handlers).
       server.httpServer?.on('close', cleanup)
       process.once('exit', cleanup)
       for (const sig of ['SIGINT', 'SIGTERM', 'SIGHUP']) {
@@ -231,9 +259,9 @@ export function mcpPlugin(options = {}) {
       // GET /mcp/tools → flat OpenAI tools list
       server.middlewares.use('/mcp/tools', async (req, res, next) => {
         if (req.method !== 'GET') return next()
-        try { await initPromise } catch { /* errors are surfaced per-handle */ }
-        const tools = handles.flatMap((h) => h.ready ? h.tools.map((t) => t.openai) : [])
-        const status = handles.map((h) => ({
+        try { await state.initPromise } catch { /* errors are surfaced per-handle */ }
+        const tools = state.handles.flatMap((h) => h.ready ? h.tools.map((t) => t.openai) : [])
+        const status = state.handles.map((h) => ({
           name: h.name,
           ready: h.ready,
           tools: h.tools.length,
@@ -258,7 +286,7 @@ export function mcpPlugin(options = {}) {
         if (sep === -1) return sendJson(res, 400, { error: `malformed tool name: ${name}` })
         const serverName = rest.slice(0, sep)
         const toolName = rest.slice(sep + 2)
-        const handle = handles.find((h) => h.name === serverName)
+        const handle = state.handles.find((h) => h.name === serverName)
         if (!handle) return sendJson(res, 404, { error: `unknown server: ${serverName}` })
         if (!handle.ready) return sendJson(res, 503, { error: `server ${serverName} not ready: ${handle.error || 'init pending'}` })
 
@@ -283,6 +311,70 @@ export function mcpPlugin(options = {}) {
         } catch (e) {
           sendJson(res, 200, { content: `Error: ${e.message}`, isError: true })
         }
+      })
+
+      // GET /mcp/config → current mcp.json text + metadata
+      server.middlewares.use('/mcp/config', async (req, res, next) => {
+        if (req.method !== 'GET') return next()
+        const exists = existsSync(configPath)
+        let content = ''
+        if (exists) {
+          try { content = readFileSync(configPath, 'utf8') } catch { content = '' }
+        }
+        sendJson(res, 200, { exists, content, path: configPath })
+      })
+
+      // POST /mcp/config → validate JSON, atomic write, respawn servers,
+      // wait for handshake, return the updated server status.
+      server.middlewares.use('/mcp/config', async (req, res, next) => {
+        if (req.method !== 'POST') return next()
+        let body
+        try { body = await readBody(req) } catch (e) {
+          return sendJson(res, 400, { error: 'bad JSON body: ' + e.message })
+        }
+        const content = body?.content
+        if (typeof content !== 'string') {
+          return sendJson(res, 400, { error: 'missing string field "content"' })
+        }
+        let parsed
+        try { parsed = JSON.parse(content) } catch (e) {
+          return sendJson(res, 400, { error: 'invalid JSON: ' + e.message })
+        }
+        if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
+          return sendJson(res, 400, { error: 'top-level value must be an object' })
+        }
+        if (parsed.mcpServers !== undefined && (typeof parsed.mcpServers !== 'object' || Array.isArray(parsed.mcpServers) || parsed.mcpServers === null)) {
+          return sendJson(res, 400, { error: '"mcpServers" must be an object' })
+        }
+
+        // Atomic write — temp file then rename — so a partial write can't
+        // leave an unparseable file behind.
+        const tmpPath = configPath + '.tmp'
+        try {
+          // Pretty-print so the on-disk file stays human-readable. Keep the
+          // user's content as the source of truth, but reformat to the
+          // canonical 2-space indent.
+          const canonical = JSON.stringify(parsed, null, 2) + '\n'
+          writeFileSync(tmpPath, canonical, 'utf8')
+          renameSync(tmpPath, configPath)
+        } catch (e) {
+          return sendJson(res, 500, { error: 'failed to write config: ' + e.message })
+        }
+
+        // Tear down current servers and respawn from the new config.
+        console.log('[mcp] config updated — restarting servers')
+        stopAll()
+        startFromConfig(parsed)
+        try { await state.initPromise } catch { /* per-handle errors surfaced below */ }
+
+        const status = state.handles.map((h) => ({
+          name: h.name,
+          ready: h.ready,
+          tools: h.tools.length,
+          error: h.error || null,
+        }))
+        const tools = state.handles.flatMap((h) => h.ready ? h.tools.map((t) => t.openai) : [])
+        sendJson(res, 200, { ok: true, tools, servers: status })
       })
     },
   }

@@ -86,6 +86,130 @@ function toOpenAIMessage(msg) {
   return out
 }
 
+// ---------------------------------------------------------------------------
+// XML tool-call extraction (Nemotron / various reasoning-model dialects)
+// ---------------------------------------------------------------------------
+//
+// Some models (notably nvidia/nemotron-3-nano) are trained to emit tool
+// calls and reasoning *inline* in the regular content stream, using XML-style
+// markup — e.g.:
+//
+//     <think>let me check…</think>
+//     <tool_call>
+//       <function=mcp__date__now>
+//         <parameter=foo>bar</parameter>
+//       </function>
+//     </tool_call>
+//
+// instead of the OpenAI structured `delta.tool_calls[]` SSE field. LM Studio's
+// llama.cpp backend doesn't have a parser configured for this dialect, so the
+// raw markup hits us inside `delta.content`. We extract it client-side so the
+// chat loop can act on it identically to a "native" tool call.
+//
+// The parser re-runs from scratch on every chunk (much simpler than a true
+// streaming state machine, and cost is negligible for typical response sizes).
+// While a tag is mid-flight (open but not yet closed), the unclosed segment is
+// held back — the user never sees `<tool_call>` markup leak into the bubble.
+
+const KNOWN_TAG_STARTS = ['<think>', '</think>', '<tool_call>', '</tool_call>']
+
+const couldStartKnownTag = (rest) => {
+  for (const tag of KNOWN_TAG_STARTS) {
+    if (tag.startsWith(rest)) return true
+  }
+  return false
+}
+
+const parseNemotronToolBlock = (block, idx) => {
+  const fnMatch = block.match(/<function=([^>\s]+)\s*>([\s\S]*?)<\/function>/)
+  if (!fnMatch) return null
+  const name = fnMatch[1].trim()
+  const inner = fnMatch[2]
+  const args = {}
+  const paramRe = /<parameter=([^>\s]+)\s*>([\s\S]*?)<\/parameter>/g
+  let m
+  while ((m = paramRe.exec(inner)) !== null) {
+    const key = m[1].trim()
+    const raw = m[2].trim()
+    // Coerce JSON-y values (numbers, booleans, arrays, objects) so the
+    // downstream tool gets typed args; fall back to raw string otherwise.
+    let value = raw
+    try { value = JSON.parse(raw) } catch { /* keep as string */ }
+    args[key] = value
+  }
+  return {
+    id: `nemotron_call_${idx}`,
+    type: 'function',
+    function: { name, arguments: JSON.stringify(args) },
+  }
+}
+
+// Returns { visible, reasoning, toolCalls } extracted from raw streamed text.
+// `toolCalls` matches the same shape we accumulate from OpenAI's native
+// `delta.tool_calls[]` so callers can treat both paths identically.
+// Exported solely so unit tests in scripts/ can exercise it; not part of the
+// public client API.
+export const extractNemotronMarkup = (rawText) => {
+  let visible = ''
+  let reasoning = ''
+  const toolCalls = []
+  const n = rawText.length
+  let i = 0
+
+  while (i < n) {
+    if (rawText.startsWith('<think>', i)) {
+      const end = rawText.indexOf('</think>', i + 7)
+      if (end === -1) {
+        // Unclosed — accumulate as in-progress reasoning, drop the rest.
+        reasoning += rawText.slice(i + 7)
+        i = n
+      } else {
+        reasoning += rawText.slice(i + 7, end)
+        i = end + '</think>'.length
+      }
+    } else if (rawText.startsWith('<tool_call>', i)) {
+      const end = rawText.indexOf('</tool_call>', i + 11)
+      if (end === -1) {
+        // Unclosed — hold the rest back; we'll see it on a later chunk.
+        i = n
+      } else {
+        const block = rawText.slice(i + 11, end)
+        const parsed = parseNemotronToolBlock(block, toolCalls.length)
+        if (parsed) {
+          toolCalls.push(parsed)
+        } else {
+          // Malformed — surface raw block to the user so they see *something*
+          // rather than silently dropping it.
+          visible += rawText.slice(i, end + '</tool_call>'.length)
+        }
+        i = end + '</tool_call>'.length
+      }
+    } else if (rawText[i] === '<') {
+      const rest = rawText.slice(i)
+      if (couldStartKnownTag(rest)) {
+        // Partial tag at the buffer tail — wait for more chunks.
+        i = n
+      } else {
+        // Plain '<' (e.g. inside code or `if x < 5`). Emit and move on.
+        visible += '<'
+        i += 1
+      }
+    } else {
+      // Run of plain chars up to the next '<' (or end of string).
+      const next = rawText.indexOf('<', i)
+      if (next === -1) {
+        visible += rawText.slice(i)
+        i = n
+      } else {
+        visible += rawText.slice(i, next)
+        i = next
+      }
+    }
+  }
+
+  return { visible, reasoning, toolCalls }
+}
+
 // Streaming chat completion. Yields events shaped:
 //   { text, reasoning, toolCalls, finishReason }
 // `toolCalls` is an array indexed by the OpenAI `tool_calls[].index`,
@@ -105,10 +229,35 @@ export async function* chat(history, selectedModel, signal, tools) {
 
   const reader = res.body.getReader()
   const decoder = new TextDecoder()
-  let fullText = ''
-  let reasoningText = ''
-  const toolCalls = [] // sparse-by-index, indexed by delta.tool_calls[].index
+  let fullText = ''                 // raw delta.content concatenation
+  let reasoningText = ''            // from delta.reasoning_content (native)
+  const nativeToolCalls = []        // sparse-by-index, from delta.tool_calls[]
   let finishReason = null
+
+  // Build the public event for a yield. Native tool calls and native
+  // reasoning_content take priority; if neither is being used, we fall back
+  // to scanning fullText for inline XML markup (Nemotron-style).
+  const buildEvent = () => {
+    if (nativeToolCalls.length > 0) {
+      return { text: fullText, reasoning: reasoningText, toolCalls: nativeToolCalls, finishReason }
+    }
+    const xml = extractNemotronMarkup(fullText)
+    const visible = xml.visible
+    const combinedReasoning = reasoningText + xml.reasoning
+    const combinedToolCalls = xml.toolCalls
+    let effectiveFinishReason = finishReason
+    if (combinedToolCalls.length > 0 && finishReason && finishReason !== 'tool_calls') {
+      // Override terminal finish reasons (`stop`, `length`, etc.) so the
+      // multi-turn loop in App.jsx kicks in for inline-XML tool calls.
+      effectiveFinishReason = 'tool_calls'
+    }
+    return {
+      text: visible,
+      reasoning: combinedReasoning,
+      toolCalls: combinedToolCalls,
+      finishReason: effectiveFinishReason,
+    }
+  }
 
   try {
     while (true) {
@@ -141,21 +290,21 @@ export async function* chat(history, selectedModel, signal, tools) {
           if (Array.isArray(delta.tool_calls)) {
             for (const tc of delta.tool_calls) {
               const idx = tc.index ?? 0
-              const existing = toolCalls[idx] || { id: '', type: 'function', function: { name: '', arguments: '' } }
+              const existing = nativeToolCalls[idx] || { id: '', type: 'function', function: { name: '', arguments: '' } }
               if (tc.id) existing.id = tc.id
               if (tc.type) existing.type = tc.type
               if (tc.function) {
                 if (tc.function.name) existing.function.name = tc.function.name
                 if (tc.function.arguments) existing.function.arguments += tc.function.arguments
               }
-              toolCalls[idx] = existing
+              nativeToolCalls[idx] = existing
               grew = true
             }
           }
 
           // Skip yielding on metadata-only deltas (role announcements, empty
           // diffs) — every yield triggers a React rerender on the caller.
-          if (grew) yield { text: fullText, reasoning: reasoningText, toolCalls, finishReason }
+          if (grew) yield buildEvent()
         } catch {
           // Skip malformed SSE lines (partial JSON across chunk boundaries).
         }
@@ -171,5 +320,5 @@ export async function* chat(history, selectedModel, signal, tools) {
 
   // Final yield with the resolved finishReason in case the closing chunk
   // didn't carry any incremental delta.
-  return { text: fullText, reasoning: reasoningText, toolCalls, finishReason }
+  return buildEvent()
 }

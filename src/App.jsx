@@ -118,6 +118,29 @@ export default function App() {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [activeMessages])
 
+  const refreshMcpTools = useCallback(async () => {
+    try {
+      const { tools, servers } = await fetchMcpTools()
+      setMcpTools(tools)
+      setMcpServers(servers)
+    } catch {
+      setMcpTools([])
+      setMcpServers([])
+    }
+  }, [])
+
+  // The bridge's POST /mcp/config response already carries the updated tools
+  // + servers status (saved a round-trip). Apply it directly when present;
+  // otherwise fall back to a /mcp/tools refetch.
+  const handleMcpConfigSaved = useCallback(async (result) => {
+    if (result && Array.isArray(result.tools) && Array.isArray(result.servers)) {
+      setMcpTools(result.tools)
+      setMcpServers(result.servers)
+    } else {
+      await refreshMcpTools()
+    }
+  }, [refreshMcpTools])
+
   const handleConnect = async () => {
     setLoading(true)
     setError('')
@@ -136,14 +159,7 @@ export default function App() {
       setLoading(false)
     }
     // MCP tool list is independent of the LLM backend — fetch unconditionally.
-    try {
-      const { tools, servers } = await fetchMcpTools()
-      setMcpTools(tools)
-      setMcpServers(servers)
-    } catch {
-      setMcpTools([])
-      setMcpServers([])
-    }
+    await refreshMcpTools()
   }
 
   useEffect(() => {
@@ -750,6 +766,7 @@ export default function App() {
             mcpServers={mcpServers}
             mcpTools={mcpTools}
             mcpEnabledForModel={modelSupportsTools(selectedModel, models)}
+            onMcpConfigSaved={handleMcpConfigSaved}
             minimized={settingsMinimized}
             onMinimize={() => setSettingsMinimized(!settingsMinimized)}
             onClose={() => setShowSettings(false)}

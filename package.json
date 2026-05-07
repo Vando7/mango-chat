@@ -12,6 +12,7 @@
     "test:stream": "node scripts/test-stream.js",
     "test:image": "node scripts/test-image.js",
     "test:mcp": "node scripts/test-mcp.js",
+    "test:tool-parser": "node scripts/test-tool-parser.mjs",
     "check": "bash scripts/check.sh"
   },
   "dependencies": {

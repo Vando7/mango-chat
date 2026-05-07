@@ -5,6 +5,7 @@
 
 const TOOLS_URL = '/mcp/tools'
 const CALL_URL = '/mcp/call'
+const CONFIG_URL = '/mcp/config'
 
 export async function fetchMcpTools() {
   try {
@@ -18,6 +19,31 @@ export async function fetchMcpTools() {
   } catch {
     return { tools: [], servers: [] }
   }
+}
+
+// Returns the current on-disk mcp.json text (or '' if missing) plus the
+// resolved absolute path the bridge will write to.
+export async function fetchMcpConfig() {
+  const res = await fetch(CONFIG_URL)
+  if (!res.ok) {
+    const text = await res.text().catch(() => '')
+    throw new Error(`HTTP ${res.status}: ${text || res.statusText}`)
+  }
+  return res.json()
+}
+
+// Writes a new mcp.json and triggers an in-process restart of the MCP
+// servers. Resolves with `{ ok, tools, servers }` describing the new state.
+// Rejects on validation errors (invalid JSON, bad shape) or write failures.
+export async function saveMcpConfig(content) {
+  const res = await fetch(CONFIG_URL, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ content }),
+  })
+  const data = await res.json().catch(() => ({}))
+  if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`)
+  return data
 }
 
 export async function callMcpTool(name, args, signal) {
