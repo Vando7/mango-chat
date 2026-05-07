@@ -32,6 +32,19 @@ const fixtures = [
   { name: 'think + tool call combined',
     input: '<think>plan it</think>Sure.<tool_call><function=t><parameter=a>1</parameter></function></tool_call>',
     want: { visible: 'Sure.', reasoning: 'plan it', toolCallsLen: 1, name: 't', args: '{"a":1}' } },
+  // ---- Hermes / Qwen3-style JSON-inside-<tool_call> ----------------------
+  { name: 'qwen-style json tool call (single line)',
+    input: '<tool_call>{"name": "mcp__date__now", "arguments": {}}</tool_call>',
+    want: { visible: '', toolCallsLen: 1, name: 'mcp__date__now', args: '{}' } },
+  { name: 'qwen-style json tool call with whitespace + newlines',
+    input: 'Sure, one sec.\n<tool_call>\n{"name": "mcp__deep-dive__web_search", "arguments": {"query": "qwen3", "num_results": 3}}\n</tool_call>',
+    want: { visible: 'Sure, one sec.\n', toolCallsLen: 1, name: 'mcp__deep-dive__web_search', argsKeys: ['num_results', 'query'] } },
+  { name: 'qwen-style accepts `parameters` alias',
+    input: '<tool_call>{"name": "t", "parameters": {"a": 1, "b": "x"}}</tool_call>',
+    want: { visible: '', toolCallsLen: 1, name: 't', argsKeys: ['a', 'b'] } },
+  { name: 'qwen-style invalid json falls back to malformed surfacing',
+    input: '<tool_call>{"name": "t", "arguments": </tool_call>',
+    want: { visibleContains: '<tool_call>', toolCallsLen: 0 } },
 ]
 
 let failed = 0

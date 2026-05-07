@@ -120,7 +120,30 @@ const couldStartKnownTag = (rest) => {
   return false
 }
 
-const parseNemotronToolBlock = (block, idx) => {
+// Two dialects appear inside `<tool_call>…</tool_call>`:
+//   1. Hermes / Qwen3 style — a JSON object: `{"name": "...", "arguments": {...}}`
+//      (Qwen also accepts `parameters` as an alias for `arguments`.)
+//   2. Nemotron style — XML nesting: `<function=name><parameter=k>v</parameter></function>`
+// We try JSON first when the trimmed block starts with `{`, then fall through.
+const parseToolCallBlock = (block, idx) => {
+  const trimmed = block.trim()
+  if (trimmed.startsWith('{')) {
+    try {
+      const obj = JSON.parse(trimmed)
+      if (obj && typeof obj === 'object' && typeof obj.name === 'string') {
+        const rawArgs = obj.arguments ?? obj.parameters ?? {}
+        const argsStr = typeof rawArgs === 'string' ? rawArgs : JSON.stringify(rawArgs)
+        return {
+          id: `xml_call_${idx}`,
+          type: 'function',
+          function: { name: obj.name, arguments: argsStr },
+        }
+      }
+    } catch {
+      // Not valid JSON — fall through to nemotron-style parsing below.
+    }
+  }
+
   const fnMatch = block.match(/<function=([^>\s]+)\s*>([\s\S]*?)<\/function>/)
   if (!fnMatch) return null
   const name = fnMatch[1].trim()
@@ -138,7 +161,7 @@ const parseNemotronToolBlock = (block, idx) => {
     args[key] = value
   }
   return {
-    id: `nemotron_call_${idx}`,
+    id: `xml_call_${idx}`,
     type: 'function',
     function: { name, arguments: JSON.stringify(args) },
   }
@@ -164,9 +187,17 @@ export const buildToolCatalogPrompt = (tools) => {
   }
 
   const lines = [
-    'You have access to the following tools. To call a tool, emit ONLY this',
-    'XML markup directly in your reply (no code fences, no surrounding text):',
+    'You have access to the following tools. To call a tool, emit ONLY a',
+    '<tool_call> block directly in your reply (no code fences, no surrounding',
+    'text). Either of the following two formats is accepted — pick whichever',
+    'your training prefers:',
     '',
+    'Format A (JSON, Hermes/Qwen-style):',
+    '<tool_call>',
+    '{"name": "TOOL_NAME", "arguments": {"ARG_NAME": "VALUE"}}',
+    '</tool_call>',
+    '',
+    'Format B (XML, Nemotron-style):',
     '<tool_call>',
     '<function=TOOL_NAME>',
     '<parameter=ARG_NAME>VALUE</parameter>',
@@ -174,10 +205,11 @@ export const buildToolCatalogPrompt = (tools) => {
     '</tool_call>',
     '',
     'Stop generating immediately after the closing </tool_call>; the host will',
-    'execute the tool and give you the result on the next turn. VALUE is parsed',
-    'as JSON when possible, else taken verbatim — for arrays, objects, numbers',
-    'and booleans emit raw JSON (e.g. <parameter=urls>["https://x"]</parameter>).',
-    'Do not invent tools that are not listed below.',
+    'execute the tool and give you the result on the next turn. In Format B,',
+    'VALUE is parsed as JSON when possible, else taken verbatim — for arrays,',
+    'objects, numbers and booleans emit raw JSON (e.g.',
+    '<parameter=urls>["https://x"]</parameter>). Do not invent tools that are',
+    'not listed below.',
     '',
     'Available tools:',
     '',
@@ -240,7 +272,7 @@ export const extractNemotronMarkup = (rawText) => {
         i = n
       } else {
         const block = rawText.slice(i + 11, end)
-        const parsed = parseNemotronToolBlock(block, toolCalls.length)
+        const parsed = parseToolCallBlock(block, toolCalls.length)
         if (parsed) {
           toolCalls.push(parsed)
         } else {
