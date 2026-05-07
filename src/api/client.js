@@ -1,4 +1,4 @@
-let API_BASE = 'http://localhost:13305'
+let API_BASE = 'http://172.27.112.1:1234'
 
 export const setApiBase = (url) => {
   API_BASE = url.endsWith('/') ? url.slice(0, -1) : url
@@ -17,13 +17,40 @@ const request = async (path, body, signal) => {
   return res
 }
 
+// Returns rich model objects when the backend supports LM Studio's
+// `/api/v0/models` (with type/publisher/arch/quantization/state/context/etc.),
+// else falls back to plain OpenAI `/v1/models` and returns minimal `{ id }`
+// objects. Callers that only need the id should read `m.id`.
 export const fetchModels = async () => {
+  // Try LM Studio's richer endpoint first.
+  try {
+    const lmRes = await fetch(`${getApiBase()}/api/v0/models`)
+    if (lmRes.ok) {
+      const data = await lmRes.json()
+      const list = data.data || data.models || []
+      if (Array.isArray(list) && list.length > 0 && list[0]?.id) {
+        return list.map((m) => ({
+          id: m.id,
+          type: m.type,
+          publisher: m.publisher,
+          arch: m.arch,
+          quantization: m.quantization,
+          state: m.state,
+          maxContext: m.max_context_length,
+          loadedContext: m.loaded_context_length,
+          capabilities: Array.isArray(m.capabilities) ? m.capabilities : [],
+        }))
+      }
+    }
+  } catch {
+    // Endpoint not present — fall through to the OpenAI shape below.
+  }
+
   const res = await fetch(`${getApiBase()}/v1/models`)
   if (!res.ok) throw new Error(`HTTP ${res.status}`)
   const data = await res.json()
-  // Handle both OpenAI format ({models:[]}) and this API format ({data:[]})
   const list = data.models || data.data || data || []
-  return list.map((m) => m.id || m.name || m)
+  return list.map((m) => (typeof m === 'string' ? { id: m } : { id: m.id || m.name }))
 }
 
 export async function* chat(history, selectedModel, signal) {
@@ -63,19 +90,22 @@ export async function* chat(history, selectedModel, signal) {
           const delta = parsed.choices?.[0]?.delta
           if (!delta) continue
 
-          // Collect reasoning_content
+          let grew = false
           if (delta.reasoning_content) {
             reasoningText += delta.reasoning_content
+            grew = true
           }
-
-          // Collect actual content
           if (delta.content) {
             fullText += delta.content
+            grew = true
           }
 
-          // Yield whenever there's any new data
-          yield { text: fullText, reasoning: reasoningText }
-        } catch {}
+          // Skip yielding on metadata-only deltas (role announcements, empty
+          // diffs) — every yield triggers a React rerender on the caller.
+          if (grew) yield { text: fullText, reasoning: reasoningText }
+        } catch {
+          // Skip malformed SSE lines (partial JSON across chunk boundaries).
+        }
       }
     }
   } catch (err) {

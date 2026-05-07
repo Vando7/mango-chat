@@ -1,14 +1,15 @@
 # Chat App
 
-A minimal React chat UI for LLM backends (Ollama, llama.cpp/lemond, vLLM, etc.) with streaming responses and image upload support.
+A minimal React chat UI for OpenAI-compatible LLM backends (default: **LM Studio**; also works with Ollama, llama.cpp/lemonade, vLLM, etc.) with streaming responses and image upload support.
 
 ## Features
 
 - **Streaming responses** — real-time token-by-token display
 - **Image upload** — multimodal chat with base64 image attachment
-- **Reasoning content** — collapsible reasoning block (💭) when the model outputs `reasoning_content`
-- **Model selector** — auto-discovers available models from the server
-- **Configurable server URL** — connect to any OpenAI-compatible API endpoint
+- **Reasoning content** — collapsible reasoning block when the model outputs `reasoning_content`
+- **Model selector** — auto-discovers available models from the server, plus a hardcoded Qwen entry that's always pickable
+- **Configurable server URL** — connect to any OpenAI-compatible API endpoint (defaults to LM Studio at `http://172.27.112.1:1234`)
+- **Persistent chat history** — SQLite (sql.js) in IndexedDB, with searchable sidebar
 
 ## Quick Start
 
@@ -16,33 +17,36 @@ A minimal React chat UI for LLM backends (Ollama, llama.cpp/lemond, vLLM, etc.) 
 # Install dependencies
 npm install
 
-# Start the dev server (Vite proxies /v1 → localhost:13305)
+# Start the dev server (Vite proxies /v1 → http://172.27.112.1:1234)
 npm run dev
 
 # Or use the convenience script
 bash dev.sh
 ```
 
-Then open `http://localhost:5173`, enter your server URL (default: `http://localhost:13305`), and click **Connect**.
+Then open `http://localhost:5173`. The app auto-connects to LM Studio at `http://172.27.112.1:1234`. Change the URL in the settings panel and click **Connect** to point at a different OpenAI-compatible server.
 
 ## Architecture
 
 ```
 src/
-├── App.jsx              — Main component, state management, orchestration
+├── App.jsx              — Main component, state, orchestration; defines DEFAULT_SERVER_URL and HARDCODED_QWEN_MODEL
 ├── api/
-│   └── client.js        — API client: fetchModels, chat (streaming), setApiBase
+│   ├── client.js        — API client: fetchModels, chat (streaming), setApiBase
+│   └── db.js            — sql.js SQLite layer; chats/messages tables persisted to IndexedDB
 └── components/
     ├── MessageList.jsx  — Message bubbles, auto-scroll, reasoning display
     ├── ChatInput.jsx    — Textarea, image upload, send button
+    ├── Sidebar.jsx      — Chat history list, search, delete
     └── SettingsPanel.jsx — Server URL input, model selector, connection status
 ```
 
 ## Tech Stack
 
-- **React 19** + Vite 8 (HMR)
+- **React 19** + Vite (HMR)
 - **Tailwind CSS 3**
-- **OpenAI-compatible API** — works with Ollama, llama.cpp/lemond, vLLM, etc.
+- **sql.js** (SQLite WASM) + IndexedDB for chat persistence
+- **OpenAI-compatible API** — defaults to LM Studio; also works with Ollama, llama.cpp/lemonade, vLLM, etc.
 
 ## API Client
 
@@ -69,7 +73,7 @@ The `chat()` function returns an async generator yielding:
 
 ## Vite Dev Server
 
-Vite proxies `/v1/**` to the LLM backend (`localhost:13305` by default) to avoid CORS issues. Configure in `vite.config.js`.
+Vite proxies `/v1/**` to the LLM backend (LM Studio at `http://172.27.112.1:1234` by default) to avoid CORS issues. Configure in `vite.config.js`. Note: when you set a fully-qualified server URL in the settings panel, the frontend hits that URL directly and bypasses the proxy.
 
 ## Testing
 

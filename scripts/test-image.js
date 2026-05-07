@@ -2,8 +2,8 @@
 // Test image upload: node scripts/test-image.js [model] [message] [path-to-image]
 
 import fs from 'fs'
-const url = 'http://localhost:13305/v1/chat/completions'
-const model = process.argv[2] || 'qwen3:latest'
+const url = process.env.LLM_URL || 'http://172.27.112.1:1234/v1/chat/completions'
+const model = process.argv[2] || 'Qwen3.6-35B-A3B-GGUF-UD-Q2_K_XL'
 const message = process.argv[3] || 'What do you see in this image?'
 const imagePath = process.argv[4]
 

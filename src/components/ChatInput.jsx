@@ -1,28 +1,5 @@
 import { useRef, useEffect } from 'react'
-
-const PaperclipIcon = () => (
-  <svg width="20" height="20" viewBox="0 0 20 20" fill="none">
-    <path d="M11.1 2.5c3.7 0 5.8 2.5 5.8 5.8 0 2.2-1.3 4.3-3.2 5.8l-5.7 4.8c-.8.7-2 .5-2.7-.3-.7-.8-.5-2 .3-2.7l5.7-4.8c1.3-1.1 2-2.5 2-3.8 0-1.8-1.2-3.3-3.2-3.3-1.5 0-2.7 1-3.3 2.3L3.5 10.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
-  </svg>
-)
-
-const SendIcon = () => (
-  <svg width="20" height="20" viewBox="0 0 20 20" fill="none">
-    <path d="M18.5 2.5L4 10l14.5 7.5V13H11V7h7.5V2.5z" fill="currentColor"/>
-  </svg>
-)
-
-const StopIcon = () => (
-  <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
-    <rect x="3" y="3" width="10" height="10" rx="1" fill="currentColor"/>
-  </svg>
-)
-
-const RemoveIcon = () => (
-  <svg width="12" height="12" viewBox="0 0 12 12" fill="none">
-    <path d="M3 3L9 9M9 3L3 9" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
-  </svg>
-)
+import { Paperclip, ArrowUp, Square, X } from 'lucide-react'
 
 export const ChatInput = ({ input, setInput, imageUrl, streaming, loading, onSend, onStop, onImageUpload, onRemoveImage }) => {
   const fileInputRef = useRef(null)
@@ -42,45 +19,68 @@ export const ChatInput = ({ input, setInput, imageUrl, streaming, loading, onSen
     }
   }
 
+  const canSend = !loading && (input.trim() || imageUrl)
+
   return (
-    <div className="border-t border-gray-800 bg-black px-4 py-3">
+    <div className="border-t border-white/5 bg-mango-bg/80 px-4 py-3 backdrop-blur-md">
       <div className="mx-auto max-w-3xl">
         {imageUrl && (
-          <div className="mb-2 relative inline-block">
-            <img src={imageUrl} alt="preview" className="max-h-32 rounded-lg" />
-            <button onClick={onRemoveImage} className="absolute -top-2 -right-2 flex h-6 w-6 items-center justify-center rounded-full bg-red-500 text-white hover:bg-red-600">
-              <RemoveIcon />
+          <div className="relative mb-2 inline-block">
+            <img src={imageUrl} alt="preview" className="max-h-32 rounded-lg border border-white/10" />
+            <button
+              onClick={onRemoveImage}
+              className="absolute -right-2 -top-2 flex h-6 w-6 items-center justify-center rounded-full bg-red-500 text-white shadow-md transition-all hover:scale-110 hover:bg-red-600"
+              aria-label="Remove image"
+            >
+              <X size={12} strokeWidth={2.25} />
             </button>
           </div>
         )}
-        <div className="flex items-end gap-2">
+        <div className="composer flex items-end gap-1.5 rounded-2xl border border-white/10 bg-white/[0.03] p-1.5 transition-all focus-within:border-mango-400/40 focus-within:bg-white/[0.05] focus-within:ring-2 focus-within:ring-mango-400/15">
           <input ref={fileInputRef} type="file" accept="image/*" onChange={onImageUpload} className="hidden" />
-          <button onClick={() => fileInputRef.current?.click()} className="rounded-lg p-2.5 text-gray-400 hover:bg-gray-800 hover:text-white flex-shrink-0" title="Attach image">
-            <PaperclipIcon />
+          <button
+            onClick={() => fileInputRef.current?.click()}
+            className="icon-btn group flex-shrink-0"
+            title="Attach image"
+            aria-label="Attach image"
+          >
+            <Paperclip
+              size={18}
+              strokeWidth={1.75}
+              className="transition-transform duration-200 group-hover:-rotate-12 group-hover:scale-110"
+            />
           </button>
           <textarea
             ref={textareaRef}
             value={input}
             onChange={(e) => setInput(e.target.value)}
             onKeyDown={handleKeyDown}
-            placeholder="Type a message..."
+            placeholder="Send a message..."
             rows={1}
-            className="flex-1 resize-none rounded-lg border border-gray-700 bg-gray-900 px-3 py-2.5 text-sm text-white placeholder-gray-500 focus:border-purple-500 focus:outline-none"
+            className="flex-1 resize-none bg-transparent px-2 py-2 text-sm text-white placeholder-gray-500 focus:outline-none"
           />
           {streaming ? (
             <button
               onClick={onStop}
-              className="flex-shrink-0 rounded-lg bg-red-600 px-4 py-2.5 text-sm font-medium text-white hover:bg-red-500"
+              className="send-btn flex h-9 w-9 flex-shrink-0 items-center justify-center rounded-xl bg-red-500/90 text-white shadow-md transition-all hover:scale-105 hover:bg-red-500 active:scale-95"
+              title="Stop"
+              aria-label="Stop generating"
             >
-              <StopIcon />
+              <Square size={14} strokeWidth={2.5} fill="currentColor" />
             </button>
           ) : (
             <button
               onClick={onSend}
-              disabled={loading}
-              className="flex-shrink-0 rounded-lg bg-purple-600 px-4 py-2.5 text-sm font-medium text-white hover:bg-purple-500 disabled:opacity-50"
+              disabled={!canSend}
+              className={`send-btn flex h-9 w-9 flex-shrink-0 items-center justify-center rounded-xl transition-all ${
+                canSend
+                  ? 'bg-gradient-to-br from-mango-400 to-amber-500 text-white shadow-md shadow-mango-500/30 hover:scale-105 hover:shadow-lg hover:shadow-mango-500/40 active:scale-95'
+                  : 'cursor-not-allowed bg-white/[0.06] text-gray-600'
+              }`}
+              title="Send"
+              aria-label="Send message"
             >
-              <SendIcon />
+              <ArrowUp size={18} strokeWidth={2.25} />
             </button>
           )}
         </div>

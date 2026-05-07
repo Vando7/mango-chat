@@ -10,24 +10,40 @@
 
 ## Architecture
 
-- **`src/App.jsx`** — Main app component, manages all state and orchestration
-- **`src/api/client.js`** — API client (`fetchModels`, `chat` async generator, `setApiBase`)
-- **`src/components/MessageList.jsx`** — Message rendering, auto-scroll (forwardRef), animated reasoning verb (mexican wave + dot cycle), hidden after streaming ends
-- **`src/components/ChatInput.jsx`** — Textarea with auto-expand, image upload, send button
-- **`src/components/Sidebar.jsx`** — Left sidebar with chat history list, search, new chat button, collapsible (toggle via ◀ handle)
-- **`src/components/SettingsPanel.jsx`** — Server URL input, model selector, connection status
+- **`src/App.jsx`** — Main app component, manages all state and orchestration. Lucide icons (`PanelLeft`/`PanelLeftClose`/`Settings`/`X`/`Sparkles`), gradient brand mark, glassy backdrop-blur header.
+- **`src/api/client.js`** — API client. `fetchModels` tries LM Studio's `/api/v0/models` first (rich metadata: `type`, `publisher`, `arch`, `quantization`, `state`, `maxContext`, `loadedContext`, `capabilities`); falls back to OpenAI `/v1/models` returning `{id}` objects only. `chat` async generator, `setApiBase`. Always returns *objects*, never bare strings — callers must read `m.id` for the model name to send.
+- **`src/components/MessageList.jsx`** — Message rendering, auto-scroll (forwardRef), animated reasoning verb (mexican wave + dot cycle), hidden after streaming ends. Empty state uses Lucide `MessagesSquare` with mango glow; assistant avatar uses gradient `Sparkles`.
+- **`src/components/ChatInput.jsx`** — Pill-style composer (focus-glow + ring), Lucide icons (`Paperclip`/`ArrowUp`/`Square`/`X`), gradient send button, attach hover-rotate animation.
+- **`src/components/Sidebar.jsx`** — Left sidebar with chat history, search-with-icon, `MessageSquarePlus` new-chat, `Trash2` delete, `ChevronLeft` collapse handle. All Lucide icons.
+- **`src/components/SettingsPanel.jsx`** — Floating settings *window* anchored top-right (absolute, z-30) of the chat pane. Header with minimize/close, glassy backdrop-blur, mango-gradient header tint. Body contains: server URL row (with `Server` icon + reconnect button) and a **model card grid**. Each `ModelCard` shows type badge (LLM/VLM/EMB), loaded-state pulse dot, quantization, publisher · arch, max-context (formatted K/M), `tools` capability chip, "manual" tag for the hardcoded fallback. Embeddings are rendered as disabled. Includes a filter input over the grid. Selected card has a check badge + mango ring.
 - **`src/api/db.js`** — SQLite database layer using sql.js (browser-based SQLite), IndexedDB persistence, idempotent saveMessages (DELETE-then-INSERT)
-- **`vite.config.js`** — Vite dev server with `/v1` proxy to `localhost:13305`
-- **`tailwind.config.js`** — Tailwind CSS config
+- **`vite.config.js`** — Vite dev server with `/v1` proxy to LM Studio (`http://172.27.112.1:1234`)
+- **`tailwind.config.js`** — Tailwind CSS config; defines `mango.{50..900,bg,panel}` color tokens and animations (`cursor-blink`, `fade-up`, `fade-in`).
+- **`public/favicon.svg`** — Mango-gradient rounded-square chat-bubble mark.
 - **`dev.sh`** — Dev runner script (installs deps if missing, runs `npm run dev`)
 - **`scripts/`** — CLI test scripts: `check.sh`, `test-api.sh`, `test-stream.js`, `test-image.js`
 
 ## Tech Stack
 
-- React 19 + Vite 8
-- Tailwind CSS 3
-- OpenAI-compatible LLM backend (Ollama, llama.cpp/lemond, vLLM, etc.)
+- React 19 + Vite
+- Tailwind CSS 3 (with custom `mango` palette)
+- [Lucide React](https://lucide.dev) for all UI icons — sleek modern stroke icons, tree-shakable
+- OpenAI-compatible LLM backend (default: LM Studio at `http://172.27.112.1:1234`; also works with Ollama, llama.cpp/lemonade, vLLM, etc.)
 - Vite dev proxy for CORS-free API calls
+
+## Visual design
+
+- **Palette**: warm "mango" — orange→amber gradients (`mango-400 → amber-500`) on a near-black `mango-bg`/`mango-panel` neutral. Tailwind tokens defined in `tailwind.config.js` under `colors.mango.*`.
+- **Iconography**: 100% Lucide icons (`lucide-react`). Default `strokeWidth` 1.75 for UI chrome, 2–2.5 for emphasis (avatar, send). Standard size 18 for buttons, 12–14 for inline accents.
+- **Animations** (in `src/index.css`): `brand-shimmer` (logo), `empty-pulse` (empty-state glow), `msg-fade-up` (message enter), `sb-slide` (sidebar enter), composer focus-glow, gear hover-rotate + 90°-on-active, paperclip rotate-on-hover, send button scale-on-hover/active, animated 3-dot loading. All wrapped by `prefers-reduced-motion` guard.
+- **Reusable classes**: `.icon-btn` (square 9×9 hover-tinted button), `.brand-mark` (gradient pill behind logo/avatar), `.empty-glow`, `.composer`, `.icon-spin`.
+
+## Default backend & model picker
+
+- `App.jsx` defaults `serverUrl` to `http://172.27.112.1:1234` (LM Studio) and auto-connects on mount.
+- The model grid always includes a hardcoded `Qwen3.6-35B-A3B-GGUF-UD-Q2_K_XL` entry (constants `HARDCODED_QWEN_MODEL` + `HARDCODED_QWEN_ENTRY` in `App.jsx`, with `_manual: true` flag rendered as a "manual" tag in the card).
+- **Auto-follow loaded model**: the selected model mirrors whatever LM Studio currently has loaded. While `connected`, App.jsx polls `fetchModels()` every 5s (paused on `document.hidden`, resumed on visibility), updates the cards' state, and auto-switches `selectedModel` to whichever chat (`type !== 'embeddings'`) model is in `state: 'loaded'`. Switching models in LM Studio while the app is open updates the selection within ~5s without user action.
+- Helpers `mergeWithHardcoded`, `pickDefaultModel`, `pickLoadedChatModel`, `sameModelList` in `App.jsx` operate on rich model *objects* (`{id, type, state, ...}`). Keep `pickLoadedChatModel` and the polling effect in sync if changing what counts as "the loaded model."
 
 ## State Management
 
@@ -46,20 +62,20 @@
 
 ## Testing
 
-```bash
-cd chat-app
+All scripts default to LM Studio at `http://172.27.112.1:1234`. Override with the first arg (shell scripts) or `LLM_URL` env var (node scripts).
 
+```bash
 # Check if server is reachable + list models
 bash scripts/check.sh
 
 # Test streaming with a message
-node scripts/test-stream.js "user.Qwen3.6-35B-A3B-GGUF-UD-Q2_K_XL" "Explain quantum entanglement in 3 sentences"
+node scripts/test-stream.js "Qwen3.6-35B-A3B-GGUF-UD-Q2_K_XL" "Explain quantum entanglement in 3 sentences"
 
 # Test non-streaming chat
 bash scripts/test-api.sh
 
 # Test image upload
-node scripts/test-image.js "user.Qwen3.6-35B-A3B-GGUF-UD-Q2_K_XL" "Describe this" ./test.png
+node scripts/test-image.js "Qwen3.6-35B-A3B-GGUF-UD-Q2_K_XL" "Describe this" ./test.png
 
 # Or use npm scripts
 npm run check
@@ -69,32 +85,33 @@ npm run test:api
 
 ## Recent Changes
 
+- **Auto-follow LM Studio loaded model** (2026-05-07): App polls `fetchModels()` every 5s while `connected` (paused when tab hidden) and auto-switches `selectedModel` to whatever LM Studio reports as `state: 'loaded'`. Cards' green-pulse state stays live without manual reload. Dropped the Qwen-first preference in `pickDefaultModel` — loaded model wins.
+- **Floating settings window + model cards** (2026-05-07): `SettingsPanel` is now a glassy top-right floating window with minimize-to-pill and close. Open by default. Server URL has its own row with a reconnect button (animated `RefreshCw`). Model picker rebuilt as a 1-col card grid with type/quantization/state/publisher/arch/context/capabilities pulled from LM Studio's `/api/v0/models`. Each card has check-badge selected state, hover lift+glow, embeddings disabled. Filter input above the grid. Plain `/v1/models` backends still work — cards just show id only.
+- **Mango visual overhaul** (2026-05-07): full icon swap to `lucide-react`; warm orange→amber palette via `tailwind.config.js` `mango` tokens; new gradient brand mark + animated assistant avatar; pill-shape composer with focus-glow; Lucide-iconed search/server inputs; backdrop-blur header & settings panel; glow on empty state; message enter animation; reduced-motion respected. Title changed to "Mango Chat", favicon redrawn.
+- Default backend switched to LM Studio at `http://172.27.112.1:1234` — applied to Vite proxy, `client.js` API_BASE, App `serverUrl`, and all CLI test scripts.
+- Vite dev server binds to all interfaces (`server.host: true`) so the app is reachable from the Hyper-V host (e.g. `http://172.27.112.89:5173`).
+- Hardcoded Qwen entry in model dropdown — `HARDCODED_QWEN_MODEL` constant, `mergeWithHardcoded`/`pickDefaultModel` helpers in `App.jsx`. Auto-selected when LM Studio reports it loaded; otherwise labeled `(manual)` in the picker via `manualFallbacks`.
+- Fixed `getChats()` crash when chats table is empty (`db.exec` returns `[]`, was reading `rows[0].values` blindly).
+- Fixed persistence race in `handleSend` finally — now reads latest messages via a `setMessages` updater instead of a render-lagged `messagesRef`.
+- Wrapped `saveMessages` in a SQLite transaction so the DELETE-then-INSERT cycle is atomic.
+- Fixed `loadFromIndexedDB` first-run NotFoundError — added `onupgradeneeded` so the object store exists before the readonly transaction opens.
+- `initDatabase()` now caches the in-flight promise so concurrent callers (Sidebar + App on mount) share one initialization instead of racing the WASM fetch.
+- Streaming generator only yields when text or reasoning actually grew — skips metadata-only deltas (role announcements, empty diffs) that previously triggered redundant React rerenders.
+- Auto-connect guarded by `autoConnectedRef` so React 19 StrictMode's dev-mode double mount doesn't fire two `/v1/models` requests.
+- Deleted dead Vite-template scaffolding: `src/App.css`, `src/assets/{hero.png,react.svg,vite.svg}`, `public/icons.svg`.
+- All ESLint errors cleared: split config for `src/` (browser globals) vs `scripts/` (node globals), removed unused vars, added `cause` on rethrown errors, commented empty catch blocks.
 - Animated reasoning verbs — each letter bounces in a staggered "mexican wave" pattern, dots cycle through `.`, `..`, `...`. Verb disappears entirely once streaming ends.
-- Fixed message persistence — now persists all messages (user + assistant) on every send, covering: normal completion, errors, and stop/abort. Uses idempotent `saveMessages()` (DELETE-then-INSERT) to prevent duplicates.
-- Fixed sidebar loading stuck — added try/catch/finally around `initDatabase()` so loading state always clears.
+- Persists all messages (user + assistant) on every send, covering: normal completion, errors, and stop/abort. Uses idempotent `saveMessages()` (DELETE-then-INSERT) to prevent duplicates.
+- Sidebar loading: try/catch/finally around `initDatabase()` so loading state always clears.
 - WASM fetch has 10s timeout to prevent infinite loading on network failure.
-
----
-
-## Recent Changes
-
-- React 19 (updated from React 18)
-- Split App.jsx into 3 component files + 1 API module (reduced App.jsx from ~300 lines)
-- Made `chat()` a proper async generator to fix `yield` syntax error
-- Added `setApiBase()` so the API client respects the user's configured server URL
-- Fixed double-fetch bug in SettingsPanel
-- Added `reasoning_content` handling — API returns reasoning before content, now collected separately
-- Added `data` format support in `fetchModels()` for APIs that use `{data:[]}` instead of `{models:[]}`
-- Added CLI test scripts: `check.sh`, `test-stream.js`, `test-image.js`, `test-api.sh`
-- Added collapsible reasoning display in UI (💭 Reasoning section)
-- Added markdown rendering for assistant messages using `react-markdown` + `remark-gfm` (supports GFM: code blocks, tables, lists, bold/italic, etc.)
-- Added dark-themed markdown CSS (code blocks with bg, tables with borders, blockquotes with accent border)
-- Fixed: API returns `data` not `models` at top level
-- Replaced generic Vite template README with project-specific documentation
-- Added `dev.sh` convenience script with auto-install
-- Custom scrollbar styling for message list
+- React 19; App.jsx split into 3 components + 1 API module (~275 lines).
+- `chat()` is an async generator; `setApiBase()` respects user-configured URL.
+- Reasoning content (`delta.reasoning_content`) collected separately and shown collapsibly.
+- `fetchModels()` handles both `{models:[]}` and `{data:[]}` response shapes.
+- Markdown rendering via `react-markdown` + `remark-gfm` for assistant messages, dark-themed.
+- CLI test scripts: `check.sh`, `test-stream.js`, `test-image.js`, `test-api.sh` (LM Studio defaults; override URL via first arg or `LLM_URL` env).
 
 ## Log Locations
 
 - **Vite dev server**: stdout only (startup info). To capture, run: `npm run dev > /tmp/vite-logs.log 2>&1 &`
-- **LLM backend (lemond)**: `/run/user/1000/lemonade/lemonade-server.log` — request logs, token counts, timing, performance metrics
+- **LM Studio**: log location depends on install. UI shows server logs in the Local Server tab. Lemonade logs (if used) live at `/run/user/1000/lemonade/lemonade-server.log`.

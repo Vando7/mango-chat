@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -e
 
-SERVER_URL="${1:-http://localhost:13305}"
+SERVER_URL="${1:-http://172.27.112.1:1234}"
 echo "🔍 Checking $SERVER_URL..."
 
 if ! curl -s --connect-timeout 5 "$SERVER_URL/v1/models" >/dev/null 2>&1; then

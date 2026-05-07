@@ -1,6 +1,6 @@
 let SQL
 let db
-let dbReady = false
+let initPromise = null
 
 const DB_NAME = 'chat-app-db'
 const DB_FILE = 'chat-app-db.sqlite'
@@ -8,10 +8,7 @@ const DB_FILE = 'chat-app-db.sqlite'
 // Import the WASM file as a blob URL for sql.js
 let wasmBlobUrl = null
 
-async function initDatabase() {
-  if (dbReady) return db
-
-  // Load WASM file with timeout
+async function doInit() {
   if (!wasmBlobUrl) {
     const controller = new AbortController()
     const timeout = setTimeout(() => controller.abort(), 10000)
@@ -24,24 +21,16 @@ async function initDatabase() {
       wasmBlobUrl = URL.createObjectURL(blob)
     } catch (e) {
       clearTimeout(timeout)
-      throw new Error(`Failed to load WASM: ${e.message}`)
+      throw new Error(`Failed to load WASM: ${e.message}`, { cause: e })
     }
   }
 
   const { default: initSqlJs } = await import('sql.js')
-  SQL = await initSqlJs({
-    locateFile: (filename) => wasmBlobUrl,
-  })
+  SQL = await initSqlJs({ locateFile: () => wasmBlobUrl })
 
-  // Load from IndexedDB
   const dbBuffer = await loadFromIndexedDB(DB_FILE)
-  if (dbBuffer) {
-    db = new SQL.Database(dbBuffer)
-  } else {
-    db = new SQL.Database()
-  }
+  db = dbBuffer ? new SQL.Database(dbBuffer) : new SQL.Database()
 
-  // Create tables if they don't exist
   db.run(`
     CREATE TABLE IF NOT EXISTS chats (
       id TEXT PRIMARY KEY,
@@ -63,8 +52,19 @@ async function initDatabase() {
     )
   `)
 
-  dbReady = true
   return db
+}
+
+// Cache the in-flight promise so concurrent callers (Sidebar + App on mount)
+// share one initialization instead of racing the WASM fetch and DB open.
+function initDatabase() {
+  if (!initPromise) {
+    initPromise = doInit().catch((e) => {
+      initPromise = null  // allow retry after failure
+      throw e
+    })
+  }
+  return initPromise
 }
 
 function saveToIndexedDB(key, data) {
@@ -88,8 +88,18 @@ function loadFromIndexedDB(key) {
   return new Promise((resolve, reject) => {
     const request = indexedDB.open(DB_NAME, 1)
     request.onerror = () => reject(request.error)
+    // First-run path: the IDB doesn't exist yet. Create the object store here
+    // too (not just in saveToIndexedDB) so the readonly transaction below
+    // doesn't blow up with NotFoundError on a clean profile.
+    request.onupgradeneeded = () => {
+      request.result.createObjectStore('store')
+    }
     request.onsuccess = () => {
       const idb = request.result
+      if (!idb.objectStoreNames.contains('store')) {
+        resolve(null)
+        return
+      }
       const tx = idb.transaction('store', 'readonly')
       const store = tx.objectStore('store')
       const get = store.get(key)
@@ -101,6 +111,7 @@ function loadFromIndexedDB(key) {
           resolve(null)
         }
       }
+      get.onerror = () => reject(get.error)
     }
   })
 }
@@ -112,6 +123,7 @@ function persist() {
 
 export function getChats() {
   const rows = db.exec('SELECT id, title, created_at, updated_at FROM chats ORDER BY updated_at DESC')
+  if (rows.length === 0) return []
   return rows[0].values.map((row) => ({
     id: row[0],
     title: row[1],
@@ -156,16 +168,22 @@ export function saveMessage(chatId, role, content, image, reasoning) {
 }
 
 export function saveMessages(chatId, messages) {
-  // Delete existing messages for this chat, then insert fresh set
-  db.run('DELETE FROM messages WHERE chat_id = ?', [chatId])
   const now = Date.now()
-  for (const msg of messages) {
-    db.run(
-      'INSERT INTO messages (chat_id, role, content, image, reasoning, created_at) VALUES (?, ?, ?, ?, ?, ?)',
-      [chatId, msg.role, msg.content || '', msg.image || null, msg.reasoning || null, now]
-    )
+  db.run('BEGIN TRANSACTION')
+  try {
+    db.run('DELETE FROM messages WHERE chat_id = ?', [chatId])
+    for (const msg of messages) {
+      db.run(
+        'INSERT INTO messages (chat_id, role, content, image, reasoning, created_at) VALUES (?, ?, ?, ?, ?, ?)',
+        [chatId, msg.role, msg.content || '', msg.image || null, msg.reasoning || null, now]
+      )
+    }
+    db.run('UPDATE chats SET updated_at = ? WHERE id = ?', [now, chatId])
+    db.run('COMMIT')
+  } catch (e) {
+    db.run('ROLLBACK')
+    throw e
   }
-  db.run('UPDATE chats SET updated_at = ? WHERE id = ?', [now, chatId])
   persist()
 }
 

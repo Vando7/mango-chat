@@ -1,4 +1,5 @@
 import { useState, useRef, useEffect, useCallback } from 'react'
+import { PanelLeft, PanelLeftClose, Settings, Sparkles } from 'lucide-react'
 import { chat, fetchModels, setApiBase } from './api/client'
 import { MessageList } from './components/MessageList'
 import { ChatInput } from './components/ChatInput'
@@ -7,49 +8,68 @@ import { Sidebar } from './components/Sidebar'
 import { initDatabase, saveChat, saveMessages, getMessages } from './api/db'
 import './index.css'
 
-const MenuIcon = ({ open }) => (
-  <svg width="20" height="20" viewBox="0 0 20 20" fill="none">
-    {open ? (
-      <path d="M4 5h12M4 10h12M4 15h12" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
-    ) : (
-      <path d="M5 5h10M5 10h10M5 15h10" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
-    )}
-  </svg>
-)
+const DEFAULT_SERVER_URL = 'http://172.27.112.1:1234'
 
-const SettingsIcon = ({ open }) => (
-  <svg width="20" height="20" viewBox="0 0 20 20" fill="none">
-    {open ? (
-      <path d="M5 5l10 10M15 5L5 15" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
-    ) : (
-      <>
-        <circle cx="10" cy="10" r="2.5" stroke="currentColor" strokeWidth="1.5"/>
-        <path d="M10 2.5v2M10 15.5v2M2.5 10h2M15.5 10h2M4.8 4.8l1.4 1.4M13.8 13.8l1.4 1.4M4.8 15.2l1.4-1.4M13.8 6.2l1.4-1.4" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
-      </>
-    )}
-  </svg>
-)
+// Always-available model option. Selected automatically when LM Studio reports
+// it loaded; otherwise still pickable so the request fails fast and tells the
+// user to load it in LM Studio.
+const HARDCODED_QWEN_MODEL = 'Qwen3.6-35B-A3B-GGUF-UD-Q2_K_XL'
+
+const HARDCODED_QWEN_ENTRY = {
+  id: HARDCODED_QWEN_MODEL,
+  type: 'llm',
+  publisher: 'unsloth',
+  arch: 'qwen3',
+  quantization: 'Q2_K_XL',
+  state: 'not-loaded',
+  capabilities: [],
+  _manual: true,
+}
+
+const mergeWithHardcoded = (serverModels) => {
+  if (serverModels.some((m) => m.id === HARDCODED_QWEN_MODEL)) return serverModels
+  return [HARDCODED_QWEN_ENTRY, ...serverModels]
+}
+
+// Mirrors LM Studio's loaded model: prefer whichever chat model is currently
+// loaded; otherwise fall back to any chat-capable model; otherwise the
+// hardcoded Qwen entry.
+const pickLoadedChatModel = (serverModels) =>
+  serverModels.find((m) => m.state === 'loaded' && m.type !== 'embeddings')
+
+const pickDefaultModel = (serverModels) => {
+  const loaded = pickLoadedChatModel(serverModels)
+  if (loaded) return loaded.id
+  const firstChat = serverModels.find((m) => m.type !== 'embeddings')
+  if (firstChat) return firstChat.id
+  if (serverModels.length > 0) return serverModels[0].id
+  return HARDCODED_QWEN_MODEL
+}
+
+const sameModelList = (a, b) =>
+  a.length === b.length &&
+  a.every((m, i) => m.id === b[i].id && m.state === b[i].state)
 
 export default function App() {
-  const [serverUrl, setServerUrl] = useState('http://localhost:13305')
+  const [serverUrl, setServerUrl] = useState(DEFAULT_SERVER_URL)
   const [connected, setConnected] = useState(false)
-  const [models, setModels] = useState([])
-  const [selectedModel, setSelectedModel] = useState('user.Qwen3.6-35B-A3B-GGUF-UD-Q2_K_XL')
+  const [models, setModels] = useState([HARDCODED_QWEN_ENTRY])
+  const [selectedModel, setSelectedModel] = useState(HARDCODED_QWEN_MODEL)
   const [messages, setMessages] = useState([])
   const [input, setInput] = useState('')
   const [imageUrl, setImageUrl] = useState('')
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
   const [streaming, setStreaming] = useState(false)
-  const [showSettings, setShowSettings] = useState(false)
+  const [showSettings, setShowSettings] = useState(true)
+  const [settingsMinimized, setSettingsMinimized] = useState(false)
   const [sidebarOpen, setSidebarOpen] = useState(true)
   const [chatRefreshKey, setChatRefreshKey] = useState(0)
 
   const messagesEndRef = useRef(null)
   const abortControllerRef = useRef(null)
   const currentChatIdRef = useRef(null)
-  const messagesRef = useRef([])
-  messagesRef.current = messages
+  const autoConnectedRef = useRef(false)
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
@@ -61,25 +81,64 @@ export default function App() {
     try {
       setApiBase(serverUrl)
       const modelList = await fetchModels()
-      setModels(modelList)
-      if (modelList.length > 0) {
-        const qwenModel = modelList.find((m) => m.includes('Qwen3.6'))
-        setSelectedModel(qwenModel || modelList[0])
-      }
+      const merged = mergeWithHardcoded(modelList)
+      setModels(merged)
+      setSelectedModel(pickDefaultModel(modelList))
       setConnected(true)
     } catch (err) {
       setError(`Failed to connect: ${err.message}`)
       setConnected(false)
-      setModels([])
+      setModels([HARDCODED_QWEN_ENTRY])
     } finally {
       setLoading(false)
     }
   }
 
-  // Auto-connect on page load
+  // Auto-connect on page load. Ref guard suppresses StrictMode's double mount
+  // in dev so we don't fire two simultaneous /v1/models requests.
   useEffect(() => {
+    if (autoConnectedRef.current) return
+    autoConnectedRef.current = true
     handleConnect()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
+
+  // Mirror LM Studio loaded state: poll /api/v0/models while connected and
+  // visible. Auto-switches selection to whatever chat model is loaded.
+  useEffect(() => {
+    if (!connected) return
+    let cancelled = false
+    let inFlight = false
+
+    const tick = async () => {
+      if (cancelled || inFlight || document.hidden) return
+      inFlight = true
+      try {
+        const list = await fetchModels()
+        if (cancelled) return
+        const merged = mergeWithHardcoded(list)
+        setModels((prev) => (sameModelList(prev, merged) ? prev : merged))
+        const loaded = pickLoadedChatModel(list)
+        if (loaded) {
+          setSelectedModel((cur) => (cur === loaded.id ? cur : loaded.id))
+        }
+      } catch {
+        // Transient failure; next tick will retry.
+      } finally {
+        inFlight = false
+      }
+    }
+
+    const interval = setInterval(tick, 5000)
+    const onVis = () => { if (!document.hidden) tick() }
+    document.addEventListener('visibilitychange', onVis)
+
+    return () => {
+      cancelled = true
+      clearInterval(interval)
+      document.removeEventListener('visibilitychange', onVis)
+    }
+  }, [connected])
 
   const persistMessages = async (chatId, msgs) => {
     try {
@@ -167,16 +226,19 @@ export default function App() {
         const updated = [...prev]
         const last = updated[updated.length - 1]
         if (last?.streaming) {
-          updated[updated.length - 1] = { ...last, content: '⚠️ ' + err.message, streaming: false }
+          updated[updated.length - 1] = { ...last, content: '⚠ ' + err.message, streaming: false }
         }
         return updated
       })
     } finally {
       setLoading(false)
       setStreaming(false)
-      // Persist all messages (user + assistant) after streaming ends
-      // Covers: normal completion, error, or abort (stop button)
-      persistMessages(currentChatIdRef.current, messagesRef.current)
+      // Capture the latest messages via an updater so we don't race with
+      // pending setMessages calls (covers normal completion, error, abort).
+      setMessages((current) => {
+        persistMessages(currentChatIdRef.current, current)
+        return current
+      })
       setChatRefreshKey((prev) => prev + 1)
     }
   }
@@ -204,8 +266,17 @@ export default function App() {
 
   const removeImage = () => setImageUrl('')
 
+  const toggleSettings = () => {
+    if (showSettings) {
+      setShowSettings(false)
+    } else {
+      setShowSettings(true)
+      setSettingsMinimized(false)
+    }
+  }
+
   return (
-    <div className="flex h-screen">
+    <div className="flex h-screen bg-mango-bg">
       <Sidebar
         open={sidebarOpen}
         onToggle={() => setSidebarOpen(!sidebarOpen)}
@@ -213,48 +284,44 @@ export default function App() {
         onNewChat={handleNewChat}
         onLoadChat={handleLoadChat}
       />
-      <div className="flex flex-1 flex-col">
-        <header className="flex items-center justify-between border-b border-gray-800 bg-black px-4 py-3">
+      <div className="relative flex flex-1 flex-col">
+        <header className="flex items-center justify-between border-b border-white/5 bg-mango-bg/80 px-4 py-3 backdrop-blur-md">
           <div className="flex items-center gap-3">
             <button
               onClick={() => setSidebarOpen(!sidebarOpen)}
-              className="rounded-lg p-2 text-gray-400 hover:bg-gray-800 hover:text-white"
+              className="icon-btn"
               title={sidebarOpen ? 'Close sidebar' : 'Open sidebar'}
+              aria-label="Toggle sidebar"
             >
-              <MenuIcon open={sidebarOpen} />
+              {sidebarOpen ? <PanelLeftClose size={18} strokeWidth={1.75} /> : <PanelLeft size={18} strokeWidth={1.75} />}
             </button>
-            <div className="flex h-8 w-8 items-center justify-center rounded-full bg-gradient-to-br from-purple-500 to-cyan-400 text-sm font-bold text-white">
-              C
+            <div className="brand-mark relative flex h-8 w-8 items-center justify-center overflow-hidden rounded-xl">
+              <Sparkles size={16} strokeWidth={2} className="relative z-10 text-white drop-shadow-sm" />
             </div>
-            <h1 className="text-lg font-semibold tracking-tight">Chat</h1>
+            <h1 className="bg-gradient-to-r from-mango-300 to-amber-200 bg-clip-text text-lg font-semibold tracking-tight text-transparent">
+              Mango
+            </h1>
             {connected && (
-              <span className="inline-flex items-center gap-1.5 rounded-full bg-green-500/10 px-2 py-0.5 text-xs text-green-400">
-                <span className="h-1.5 w-1.5 rounded-full bg-green-400 animate-pulse"></span>
+              <span className="inline-flex items-center gap-1.5 rounded-full border border-emerald-400/20 bg-emerald-400/10 px-2.5 py-0.5 text-xs font-medium text-emerald-300">
+                <span className="relative flex h-1.5 w-1.5">
+                  <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-emerald-400 opacity-60" />
+                  <span className="relative inline-flex h-1.5 w-1.5 rounded-full bg-emerald-400" />
+                </span>
                 Connected
               </span>
             )}
           </div>
           <button
-            onClick={() => setShowSettings(!showSettings)}
-            className="rounded-lg p-2 text-gray-400 hover:bg-gray-800 hover:text-white"
+            onClick={toggleSettings}
+            className={`icon-btn ${showSettings ? 'is-on' : ''}`}
+            title={showSettings ? 'Hide settings' : 'Show settings'}
+            aria-label="Toggle settings"
           >
-            <SettingsIcon open={showSettings} />
+            <span className={`icon-spin ${showSettings ? 'is-active' : ''}`}>
+              <Settings size={18} strokeWidth={1.75} />
+            </span>
           </button>
         </header>
-
-        {showSettings && (
-          <SettingsPanel
-            serverUrl={serverUrl}
-            setServerUrl={setServerUrl}
-            loading={loading}
-            error={error}
-            connected={connected}
-            models={models}
-            selectedModel={selectedModel}
-            setSelectedModel={setSelectedModel}
-            onConnect={handleConnect}
-          />
-        )}
 
         <MessageList ref={messagesEndRef} messages={messages} />
 
@@ -269,6 +336,23 @@ export default function App() {
           onImageUpload={handleImageUpload}
           onRemoveImage={removeImage}
         />
+
+        {showSettings && (
+          <SettingsPanel
+            serverUrl={serverUrl}
+            setServerUrl={setServerUrl}
+            loading={loading}
+            error={error}
+            connected={connected}
+            models={models}
+            selectedModel={selectedModel}
+            setSelectedModel={setSelectedModel}
+            onConnect={handleConnect}
+            minimized={settingsMinimized}
+            onMinimize={() => setSettingsMinimized(!settingsMinimized)}
+            onClose={() => setShowSettings(false)}
+          />
+        )}
       </div>
     </div>
   )
