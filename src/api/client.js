@@ -111,7 +111,34 @@ function toOpenAIMessage(msg) {
 // While a tag is mid-flight (open but not yet closed), the unclosed segment is
 // held back — the user never sees `<tool_call>` markup leak into the bubble.
 
-const KNOWN_TAG_STARTS = ['<think>', '</think>', '<tool_call>', '</tool_call>']
+// Tool-call markers we recognize. `[[CALL]]` is what we instruct the model
+// to emit when "force tools" is on — Lemonade (and likely other backends
+// developing native tool support) appears to intercept `<tool_call>` and
+// either swallow the markup or stop generation mid-call, so we use a tag
+// outside their detector. `<tool_call>` is kept as a secondary form so
+// models that emit Hermes/Nemotron markup natively still work when the
+// backend passes the markup through (LM Studio + llama.cpp without
+// reasoning_format=auto, for instance).
+const TOOL_MARKERS = [
+  { open: '[[CALL]]', close: '[[/CALL]]' },
+  { open: '<tool_call>', close: '</tool_call>' },
+]
+
+// Both `<` and `[` can begin a known tag — used by the partial-tag holdback
+// at chunk boundaries and by the plain-text fast-forward.
+const isPotentialTagChar = (c) => c === '<' || c === '['
+
+const matchToolOpen = (text, idx) => {
+  for (const m of TOOL_MARKERS) {
+    if (text.startsWith(m.open, idx)) return m
+  }
+  return null
+}
+
+const KNOWN_TAG_STARTS = [
+  '<think>', '</think>',
+  ...TOOL_MARKERS.flatMap((m) => [m.open, m.close]),
+]
 
 const couldStartKnownTag = (rest) => {
   for (const tag of KNOWN_TAG_STARTS) {
@@ -189,37 +216,43 @@ export const buildToolCatalogPrompt = (tools) => {
   const lines = [
     'You have access to the tools listed below. When the user asks for',
     'something a tool can answer, your ENTIRE next response must be a single',
-    '<tool_call> block — no preamble, no acknowledgment ("sure", "let me…",',
+    '[[CALL]] block — no preamble, no acknowledgment ("sure", "let me…",',
     '"I\'ll call X"), no code fences, no explanation of what you\'re about to',
     'do. The host will execute the tool and feed the result back to you on',
     'the next turn; that is when you write the user-facing answer.',
     '',
+    'IMPORTANT: use the literal markers [[CALL]] and [[/CALL]] (double square',
+    'brackets). Do NOT use <tool_call>…</tool_call> — that tag is intercepted',
+    'by the inference server before it reaches the host, so calls written with',
+    'it will be silently dropped.',
+    '',
     'Examples (assume mcp__date__now exists):',
     '',
     'User: What\'s today\'s date?',
-    'You: <tool_call>{"name": "mcp__date__now", "arguments": {}}</tool_call>',
+    'You: [[CALL]]{"name": "mcp__date__now", "arguments": {}}[[/CALL]]',
     '',
     'User: Search HN for "rust async".',
-    'You: <tool_call>{"name": "mcp__deep-dive__hn_search", "arguments": {"query": "rust async"}}</tool_call>',
+    'You: [[CALL]]{"name": "mcp__deep-dive__hn_search", "arguments": {"query": "rust async"}}[[/CALL]]',
     '',
     'WRONG (do not do these):',
-    '  "Sure, let me check the date for you." [stops with no tool_call]',
-    '  "I\'ll call get_date now." <tool_call>…</tool_call>   ← preamble first',
-    '  ```<tool_call>…</tool_call>```                        ← code fences',
+    '  "Sure, let me check the date for you." [stops with no [[CALL]] block]',
+    '  "I\'ll call get_date now." [[CALL]]…[[/CALL]]      ← preamble first',
+    '  ```[[CALL]]…[[/CALL]]```                          ← code fences',
+    '  <tool_call>…</tool_call>                          ← wrong tag',
     '',
-    'Two formats are accepted; prefer Format A (JSON):',
+    'Two argument formats are accepted; prefer Format A (JSON):',
     '',
     'Format A — JSON (Hermes / Qwen-style):',
-    '<tool_call>',
+    '[[CALL]]',
     '{"name": "TOOL_NAME", "arguments": {"ARG_NAME": "VALUE"}}',
-    '</tool_call>',
+    '[[/CALL]]',
     '',
     'Format B — XML (Nemotron-style):',
-    '<tool_call>',
+    '[[CALL]]',
     '<function=TOOL_NAME>',
     '<parameter=ARG_NAME>VALUE</parameter>',
     '</function>',
-    '</tool_call>',
+    '[[/CALL]]',
     '',
     'In Format B, VALUE is parsed as JSON when possible, else taken verbatim —',
     'for arrays, objects, numbers and booleans emit raw JSON (e.g.',
@@ -270,34 +303,49 @@ export const extractNemotronMarkup = (rawText) => {
   let i = 0
 
   // Scan a chunk of text (typically the body of a <think> block) and pull
-  // any `<tool_call>…</tool_call>` markup out as real calls. Returns the
-  // residual reasoning text with the markup stripped. Qwen3 in thinking
-  // mode often emits its tool calls inline inside <think>, and we want them
-  // to actually fire rather than disappear into the reasoning channel.
+  // any tool-call markup out as real calls. Returns the residual reasoning
+  // text with the markup stripped. Qwen3 in thinking mode often emits its
+  // tool calls inline inside <think>, and we want them to actually fire
+  // rather than disappear into the reasoning channel.
   const liftCallsFromInner = (text) => {
     let out = ''
     let j = 0
     const len = text.length
     while (j < len) {
-      const open = text.indexOf('<tool_call>', j)
-      if (open === -1) {
-        out += text.slice(j)
-        break
+      // Find the earliest occurrence of any known tool-open marker.
+      let bestOpen = -1
+      let marker = null
+      for (const m of TOOL_MARKERS) {
+        const idx = text.indexOf(m.open, j)
+        if (idx !== -1 && (bestOpen === -1 || idx < bestOpen)) {
+          bestOpen = idx
+          marker = m
+        }
       }
-      const close = text.indexOf('</tool_call>', open + 11)
+      if (bestOpen === -1) { out += text.slice(j); break }
+      const close = text.indexOf(marker.close, bestOpen + marker.open.length)
       if (close === -1) {
         // Incomplete — keep the rest in reasoning so we don't lose it.
         out += text.slice(j)
         break
       }
-      out += text.slice(j, open)
-      const block = text.slice(open + 11, close)
+      out += text.slice(j, bestOpen)
+      const block = text.slice(bestOpen + marker.open.length, close)
       const parsed = parseToolCallBlock(block, toolCalls.length)
       if (parsed) toolCalls.push(parsed)
-      else out += text.slice(open, close + '</tool_call>'.length)
-      j = close + '</tool_call>'.length
+      else out += text.slice(bestOpen, close + marker.close.length)
+      j = close + marker.close.length
     }
     return out
+  }
+
+  // Scan forward from i for the next character that could begin a known
+  // tag (`<` or `[`). Lets us fast-forward over plain prose runs.
+  const nextPotentialTag = (from) => {
+    for (let k = from; k < n; k++) {
+      if (isPotentialTagChar(rawText[k])) return k
+    }
+    return -1
   }
 
   while (i < n) {
@@ -311,43 +359,52 @@ export const extractNemotronMarkup = (rawText) => {
         reasoning += liftCallsFromInner(rawText.slice(i + 7, end))
         i = end + '</think>'.length
       }
-    } else if (rawText.startsWith('<tool_call>', i)) {
-      const end = rawText.indexOf('</tool_call>', i + 11)
+      continue
+    }
+
+    const tool = matchToolOpen(rawText, i)
+    if (tool) {
+      const end = rawText.indexOf(tool.close, i + tool.open.length)
       if (end === -1) {
         // Unclosed — hold the rest back; we'll see it on a later chunk.
         i = n
       } else {
-        const block = rawText.slice(i + 11, end)
+        const block = rawText.slice(i + tool.open.length, end)
         const parsed = parseToolCallBlock(block, toolCalls.length)
         if (parsed) {
           toolCalls.push(parsed)
         } else {
           // Malformed — surface raw block to the user so they see *something*
           // rather than silently dropping it.
-          visible += rawText.slice(i, end + '</tool_call>'.length)
+          visible += rawText.slice(i, end + tool.close.length)
         }
-        i = end + '</tool_call>'.length
+        i = end + tool.close.length
       }
-    } else if (rawText[i] === '<') {
+      continue
+    }
+
+    if (isPotentialTagChar(rawText[i])) {
       const rest = rawText.slice(i)
       if (couldStartKnownTag(rest)) {
         // Partial tag at the buffer tail — wait for more chunks.
         i = n
       } else {
-        // Plain '<' (e.g. inside code or `if x < 5`). Emit and move on.
-        visible += '<'
+        // Plain '<' or '[' (e.g. `if x < 5`, markdown link `[text]`). Emit
+        // and move on.
+        visible += rawText[i]
         i += 1
       }
+      continue
+    }
+
+    // Run of plain chars up to the next potential tag start (or end).
+    const next = nextPotentialTag(i)
+    if (next === -1) {
+      visible += rawText.slice(i)
+      i = n
     } else {
-      // Run of plain chars up to the next '<' (or end of string).
-      const next = rawText.indexOf('<', i)
-      if (next === -1) {
-        visible += rawText.slice(i)
-        i = n
-      } else {
-        visible += rawText.slice(i, next)
-        i = next
-      }
+      visible += rawText.slice(i, next)
+      i = next
     }
   }
 

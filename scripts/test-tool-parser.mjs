@@ -52,6 +52,25 @@ const fixtures = [
   { name: 'reasoning around in-think call is preserved (markup stripped)',
     input: '<think>plan: <tool_call>{"name":"t","arguments":{"a":1}}</tool_call> done</think>after',
     want: { visible: 'after', reasoning: 'plan:  done', toolCallsLen: 1, name: 't', argsKeys: ['a'] } },
+  // ---- New [[CALL]] / [[/CALL]] dialect (force-tools default) -------------
+  { name: '[[CALL]] json tool call (single line)',
+    input: '[[CALL]]{"name": "mcp__date__now", "arguments": {}}[[/CALL]]',
+    want: { visible: '', toolCallsLen: 1, name: 'mcp__date__now', args: '{}' } },
+  { name: '[[CALL]] with preamble around it',
+    input: 'one moment.\n[[CALL]]\n{"name":"t","arguments":{"a":1}}\n[[/CALL]]\nback',
+    want: { visible: 'one moment.\n\nback', toolCallsLen: 1, name: 't', argsKeys: ['a'] } },
+  { name: '[[CALL]] inside <think> still fires',
+    input: '<think>plan: [[CALL]]{"name":"t","arguments":{}}[[/CALL]] done</think>',
+    want: { visible: '', toolCallsLen: 1, name: 't', args: '{}' } },
+  { name: 'partial [[CALL]] held back at chunk boundary',
+    input: 'one moment.\n[[CA',
+    want: { visible: 'one moment.\n', toolCallsLen: 0 } },
+  { name: 'plain [text] markdown link is not treated as a call',
+    input: 'see [docs](https://example.com) for details',
+    want: { visible: 'see [docs](https://example.com) for details', toolCallsLen: 0 } },
+  { name: 'plain [ at end of buffer is held back (resolves on next chunk)',
+    input: 'foo [',
+    want: { visible: 'foo ', toolCallsLen: 0 } },
 ]
 
 let failed = 0
